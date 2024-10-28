@@ -1,0 +1,2 @@
+[env]
+CARGO_TEST_ARGS = "--features test-utils"
