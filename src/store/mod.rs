@@ -1,12 +1,12 @@
 //! Checkpoint storage implementations for the Kinesis processor
 
-use std::collections::HashMap;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::time::Duration;
 
-pub mod memory;
 #[cfg(feature = "dynamodb-store")]
 pub mod dynamodb;
+pub mod memory;
 
 /// Trait for checkpoint storage implementations
 #[async_trait]
@@ -27,18 +27,17 @@ pub trait CheckpointStoreTestExt: CheckpointStore {
 
     /// Get all checkpoints for testing verification
     async fn get_all_checkpoints(&self) -> anyhow::Result<HashMap<String, String>> {
-        Ok(HashMap::new())  // Default implementation returns empty map
+        Ok(HashMap::new()) // Default implementation returns empty map
     }
 }
 
 #[cfg(feature = "test-utils")]
 impl<T: CheckpointStore> CheckpointStoreTestExt for T {}
 
-
 // Re-export implementations
-pub use memory::InMemoryCheckpointStore;
 #[cfg(feature = "dynamodb-store")]
 pub use dynamodb::DynamoDbCheckpointStore;
+pub use memory::InMemoryCheckpointStore;
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -62,4 +61,3 @@ pub(crate) mod test_utils {
         Ok(())
     }
 }
-

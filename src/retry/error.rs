@@ -1,18 +1,18 @@
+use crate::{retry, ProcessorError};
 use std::time::Duration;
 use thiserror::Error;
-use crate::{retry, ProcessorError};
 
 #[derive(Debug, Error)]
 pub enum RetryError {
     #[error("Operation timed out after {0:?}")]
     Timeout(Duration),
-    
+
     #[error("Maximum retries ({0}) exceeded: {1}")]
     MaxRetriesExceeded(u32, String),
-    
+
     #[error("Retry interrupted by shutdown signal")]
     Interrupted,
-    
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -21,10 +21,9 @@ impl From<retry::RetryError> for ProcessorError {
     fn from(err: retry::RetryError) -> Self {
         match err {
             retry::RetryError::Timeout(d) => ProcessorError::ProcessingTimeout(d),
-            retry::RetryError::MaxRetriesExceeded(attempts, msg) =>
-                ProcessorError::MaxRetriesExceeded(
-                    format!("After {} attempts: {}", attempts, msg)
-                ),
+            retry::RetryError::MaxRetriesExceeded(attempts, msg) => {
+                ProcessorError::MaxRetriesExceeded(format!("After {} attempts: {}", attempts, msg))
+            }
             retry::RetryError::Interrupted => ProcessorError::Shutdown,
             retry::RetryError::Other(e) => ProcessorError::Other(e),
         }
@@ -44,4 +43,3 @@ impl RetryError {
         matches!(self, RetryError::Interrupted)
     }
 }
-

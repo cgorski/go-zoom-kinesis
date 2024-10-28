@@ -1,5 +1,5 @@
-use std::time::Duration;
 use rand::Rng;
+use std::time::Duration;
 use tracing::trace;
 
 /// Trait defining backoff behavior
@@ -7,7 +7,7 @@ use tracing::trace;
 pub trait Backoff: Send + Sync {
     /// Calculate the next backoff delay
     fn next_delay(&self, attempt: u32) -> Duration;
-    
+
     /// Reset any internal state
     fn reset(&mut self);
 }
@@ -36,24 +36,24 @@ impl ExponentialBackoff {
         ExponentialBackoffBuilder::default()
     }
 
-        fn calculate_delay(&self, attempt: u32) -> Duration {
-            let base = self.initial_delay.as_millis() as f64;
-            let multiplier = self.multiplier.powi(attempt as i32);
+    fn calculate_delay(&self, attempt: u32) -> Duration {
+        let base = self.initial_delay.as_millis() as f64;
+        let multiplier = self.multiplier.powi(attempt as i32);
 
-            // Calculate exponential delay
-            let exp_delay = base * multiplier;
+        // Calculate exponential delay
+        let exp_delay = base * multiplier;
 
-            // Cap at max_delay BEFORE adding jitter
-            let capped_delay = exp_delay.min(self.max_delay.as_millis() as f64);
+        // Cap at max_delay BEFORE adding jitter
+        let capped_delay = exp_delay.min(self.max_delay.as_millis() as f64);
 
-            // Add jitter: random value between -jitter_factor and +jitter_factor
-            let jitter_range = capped_delay * self.jitter_factor;
-            let jitter = rand::thread_rng().gen_range(-jitter_range..=jitter_range);
+        // Add jitter: random value between -jitter_factor and +jitter_factor
+        let jitter_range = capped_delay * self.jitter_factor;
+        let jitter = rand::thread_rng().gen_range(-jitter_range..=jitter_range);
 
-            // Cap again after adding jitter to ensure we never exceed max_delay
-            let final_delay = (capped_delay + jitter).min(self.max_delay.as_millis() as f64);
+        // Cap again after adding jitter to ensure we never exceed max_delay
+        let final_delay = (capped_delay + jitter).min(self.max_delay.as_millis() as f64);
 
-            trace!(
+        trace!(
             attempt = attempt,
             base_delay_ms = capped_delay,
             jitter_ms = jitter,
@@ -61,9 +61,8 @@ impl ExponentialBackoff {
             "Calculated backoff delay"
         );
 
-            Duration::from_millis(final_delay as u64)
-        }
-
+        Duration::from_millis(final_delay as u64)
+    }
 }
 
 impl Backoff for ExponentialBackoff {
@@ -166,19 +165,21 @@ mod tests {
             .build();
 
         // Test multiple attempts to ensure exponential growth
-        let delays: Vec<Duration> = (0..5)
-            .map(|attempt| backoff.next_delay(attempt))
-            .collect();
+        let delays: Vec<Duration> = (0..5).map(|attempt| backoff.next_delay(attempt)).collect();
 
         // Verify each delay is larger than the previous (up to max)
         for i in 1..delays.len() {
-            assert!(delays[i] >= delays[i-1] || delays[i] == max_delay);
+            assert!(delays[i] >= delays[i - 1] || delays[i] == max_delay);
         }
 
         // Test with a high attempt number that would exceed max_delay without capping
         let max_attempt_delay = backoff.next_delay(20);
-        assert!(max_attempt_delay <= max_delay,
-                "Delay {:?} exceeded max delay {:?}", max_attempt_delay, max_delay);
+        assert!(
+            max_attempt_delay <= max_delay,
+            "Delay {:?} exceeded max delay {:?}",
+            max_attempt_delay,
+            max_delay
+        );
     }
     #[test]
     fn test_jitter_variation() {
@@ -188,9 +189,7 @@ mod tests {
             .build();
 
         // Get multiple delays for the same attempt
-        let delays: Vec<Duration> = (0..100)
-            .map(|_| backoff.next_delay(1))
-            .collect();
+        let delays: Vec<Duration> = (0..100).map(|_| backoff.next_delay(1)).collect();
 
         // Verify not all delays are identical (jitter is working)
         let unique_delays: std::collections::HashSet<_> = delays.iter().collect();
@@ -208,7 +207,7 @@ mod tests {
     #[test]
     fn test_fixed_backoff() {
         let backoff = FixedBackoff::new(Duration::from_millis(100));
-        
+
         // Verify delay remains constant
         for attempt in 0..5 {
             assert_eq!(backoff.next_delay(attempt), Duration::from_millis(100));
@@ -222,7 +221,7 @@ mod tests {
             .build();
 
         assert!(backoff.jitter_factor <= 1.0);
-        
+
         let backoff = ExponentialBackoff::builder()
             .jitter_factor(-0.5) // Should be clamped to 0.0
             .build();
@@ -230,4 +229,3 @@ mod tests {
         assert!(backoff.jitter_factor >= 0.0);
     }
 }
-

@@ -105,7 +105,6 @@ pub enum IteratorEventType {
 }
 
 impl ProcessingEvent {
-
     pub fn batch_complete(
         shard_id: String,
         successful_count: usize,
@@ -136,11 +135,7 @@ impl ProcessingEvent {
             },
         }
     }
-    pub fn record_failure(
-        shard_id: String,
-        sequence_number: String,
-        error: String,
-    ) -> Self {
+    pub fn record_failure(shard_id: String, sequence_number: String, error: String) -> Self {
         Self {
             timestamp: SystemTime::now(),
             shard_id,
@@ -150,11 +145,7 @@ impl ProcessingEvent {
             },
         }
     }
-    pub fn checkpoint_failure(
-        shard_id: String,
-        sequence_number: String,
-        error: String,
-    ) -> Self {
+    pub fn checkpoint_failure(shard_id: String, sequence_number: String, error: String) -> Self {
         Self {
             timestamp: SystemTime::now(),
             shard_id,
@@ -231,10 +222,7 @@ impl ProcessingEvent {
         Self {
             timestamp: SystemTime::now(),
             shard_id,
-            event_type: ProcessingEventType::Iterator {
-                event_type,
-                error,
-            },
+            event_type: ProcessingEventType::Iterator { event_type, error },
         }
     }
 }

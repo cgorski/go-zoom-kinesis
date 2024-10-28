@@ -2,7 +2,7 @@
 use {
     crate::store::CheckpointStore,
     async_trait::async_trait,
-    aws_sdk_dynamodb::{Client as DynamoClient, types::AttributeValue},
+    aws_sdk_dynamodb::{types::AttributeValue, Client as DynamoClient},
     tracing::{debug, error, instrument, trace},
 };
 
@@ -16,17 +16,13 @@ pub struct DynamoDbCheckpointStore {
 
 #[cfg(feature = "dynamodb-store")]
 impl DynamoDbCheckpointStore {
-    pub fn new(
-        client: DynamoClient,
-        table_name: String,
-        key_prefix: String,
-    ) -> Self {
+    pub fn new(client: DynamoClient, table_name: String, key_prefix: String) -> Self {
         debug!(
             table_name = %table_name,
             key_prefix = %key_prefix,
             "Initializing DynamoDB checkpoint store"
         );
-        
+
         Self {
             client,
             table_name,
@@ -45,20 +41,18 @@ impl CheckpointStore for DynamoDbCheckpointStore {
     #[instrument(skip(self), fields(table = %self.table_name, prefix = %self.key_prefix))]
     async fn get_checkpoint(&self, shard_id: &str) -> anyhow::Result<Option<String>> {
         let key = self.prefixed_key(shard_id);
-        
+
         trace!(
             shard_id = %shard_id,
             key = %key,
             "Getting checkpoint from DynamoDB"
         );
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get_item()
             .table_name(&self.table_name)
-            .key(
-                "shard_id",
-                AttributeValue::S(key.clone()),
-            )
+            .key("shard_id", AttributeValue::S(key.clone()))
             .send()
             .await
             .context("Failed to get checkpoint from DynamoDB")?;
@@ -82,7 +76,7 @@ impl CheckpointStore for DynamoDbCheckpointStore {
     #[instrument(skip(self), fields(table = %self.table_name, prefix = %self.key_prefix))]
     async fn save_checkpoint(&self, shard_id: &str, sequence_number: &str) -> anyhow::Result<()> {
         let key = self.prefixed_key(shard_id);
-        
+
         debug!(
             shard_id = %shard_id,
             key = %key,
@@ -93,10 +87,7 @@ impl CheckpointStore for DynamoDbCheckpointStore {
         self.client
             .put_item()
             .table_name(&self.table_name)
-            .item(
-                "shard_id",
-                AttributeValue::S(key.clone()),
-            )
+            .item("shard_id", AttributeValue::S(key.clone()))
             .item(
                 "sequence_number",
                 AttributeValue::S(sequence_number.to_string()),
@@ -119,18 +110,12 @@ impl CheckpointStore for DynamoDbCheckpointStore {
 #[cfg(all(test, feature = "dynamodb-store"))]
 mod tests {
     use super::*;
-    use aws_sdk_dynamodb::config::Builder;
     use aws_credential_types::Credentials;
+    use aws_sdk_dynamodb::config::Builder;
 
     async fn create_test_client() -> DynamoClient {
-        let creds = Credentials::new(
-            "test",
-            "test",
-            None,
-            None,
-            "test",
-        );
-        
+        let creds = Credentials::new("test", "test", None, None, "test");
+
         let config = Builder::new()
             .credentials_provider(creds)
             .region(aws_sdk_dynamodb::Region::new("us-east-1"))
@@ -151,9 +136,7 @@ mod tests {
         // Note: These tests would need a local DynamoDB or proper mocking
         // This just verifies the construction works
         assert_eq!(store.prefixed_key("shard-1"), "test-prefix-shard-1");
-        
+
         Ok(())
     }
 }
-
-

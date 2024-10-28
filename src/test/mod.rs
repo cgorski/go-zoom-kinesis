@@ -2,8 +2,8 @@
 
 pub mod mocks;
 
-use std::sync::Arc;
 use aws_sdk_kinesis::types::{Record, Shard};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper functions for creating test data
@@ -15,7 +15,7 @@ impl TestUtils {
         Record::builder()
             .sequence_number(sequence_number)
             .data(aws_smithy_types::Blob::new(data.to_vec()))
-            .partition_key("test-partition-key")  // Added required field
+            .partition_key("test-partition-key") // Added required field
             .build()
             .expect("Failed to build test record")
     }
@@ -84,16 +84,20 @@ impl TestSetup {
 
     /// Setup basic success scenario
     pub async fn setup_success_scenario(&self) -> anyhow::Result<()> {
-        self.client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1")
-        ])).await;
+        self.client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
 
-        self.client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        self.client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
 
-        self.client.mock_get_records(Ok((
-            TestUtils::create_test_records(1),
-            Some("next-iterator".to_string()),
-        ))).await;
+        self.client
+            .mock_get_records(Ok((
+                TestUtils::create_test_records(1),
+                Some("next-iterator".to_string()),
+            )))
+            .await;
 
         self.checkpoint_store.mock_get_checkpoint(Ok(None)).await;
         self.checkpoint_store.mock_save_checkpoint(Ok(())).await;
@@ -103,13 +107,17 @@ impl TestSetup {
 
     /// Setup error scenario
     pub async fn setup_error_scenario(&self) -> anyhow::Result<()> {
-        self.client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1")
-        ])).await;
+        self.client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
 
-        self.client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        self.client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
 
-        self.client.mock_get_records(Err(anyhow::anyhow!("Simulated error"))).await;
+        self.client
+            .mock_get_records(Err(anyhow::anyhow!("Simulated error")))
+            .await;
 
         Ok(())
     }
@@ -137,10 +145,7 @@ pub mod assertions {
         Ok(())
     }
 
-    pub async fn wait_for_condition<F>(
-        mut check: F,
-        timeout: Duration,
-    ) -> anyhow::Result<()>
+    pub async fn wait_for_condition<F>(mut check: F, timeout: Duration) -> anyhow::Result<()>
     where
         F: FnMut() -> bool,
     {

@@ -124,20 +124,17 @@ impl<B: Backoff> RetryHandle<B> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::test::TestUtils;
+    use crate::KinesisProcessor;
     use crate::ProcessorError;
-use crate::KinesisProcessor;
-use crate::test::TestUtils;
-use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn test_retry_success() -> anyhow::Result<()> {
         let config = RetryConfig::default();
-        let backoff = ExponentialBackoff::new(
-            config.initial_backoff,
-            config.max_backoff,
-        );
+        let backoff = ExponentialBackoff::new(config.initial_backoff, config.max_backoff);
 
         let mut retry = RetryHandle::new(config, backoff);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -145,20 +142,22 @@ use super::*;
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let result = retry.retry(
-            || {
-                let value = counter_clone.clone();
-                async move {
-                    let attempts = value.fetch_add(1, Ordering::SeqCst);
-                    if attempts < 2 {
-                        Err("not yet")
-                    } else {
-                        Ok("success")
+        let result = retry
+            .retry(
+                || {
+                    let value = counter_clone.clone();
+                    async move {
+                        let attempts = value.fetch_add(1, Ordering::SeqCst);
+                        if attempts < 2 {
+                            Err("not yet")
+                        } else {
+                            Ok("success")
+                        }
                     }
-                }
-            },
-            &mut shutdown_rx,
-        ).await;
+                },
+                &mut shutdown_rx,
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -175,18 +174,14 @@ use super::*;
             ..Default::default()
         };
 
-        let backoff = ExponentialBackoff::new(
-            config.initial_backoff,
-            config.max_backoff,
-        );
+        let backoff = ExponentialBackoff::new(config.initial_backoff, config.max_backoff);
 
         let mut retry = RetryHandle::new(config, backoff);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-        let result: Result<(), _> = retry.retry(
-            || async { Err("always fails") },
-            &mut shutdown_rx,
-        ).await;
+        let result: Result<(), _> = retry
+            .retry(|| async { Err("always fails") }, &mut shutdown_rx)
+            .await;
 
         assert!(matches!(result, Err(RetryError::MaxRetriesExceeded(2, _))));
 
@@ -197,22 +192,21 @@ use super::*;
     #[tokio::test]
     async fn test_retry_shutdown() -> anyhow::Result<()> {
         let config = RetryConfig::default();
-        let backoff = ExponentialBackoff::new(
-            config.initial_backoff,
-            config.max_backoff,
-        );
+        let backoff = ExponentialBackoff::new(config.initial_backoff, config.max_backoff);
 
         let mut retry = RetryHandle::new(config, backoff);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
         let handle = tokio::spawn(async move {
-            retry.retry(
-                || async {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    Err("never succeeds")
-                },
-                &mut shutdown_rx,
-            ).await
+            retry
+                .retry(
+                    || async {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        Err("never succeeds")
+                    },
+                    &mut shutdown_rx,
+                )
+                .await
         });
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -233,10 +227,7 @@ use super::*;
             jitter_factor: 0.1,
         };
 
-        let backoff = ExponentialBackoff::new(
-            config.initial_backoff,
-            config.max_backoff,
-        );
+        let backoff = ExponentialBackoff::new(config.initial_backoff, config.max_backoff);
 
         let mut retry = RetryHandle::new(config, backoff);
         let (tx, mut rx) = tokio::sync::watch::channel(false);
@@ -246,20 +237,22 @@ use super::*;
 
         let start = std::time::Instant::now();
 
-        let result: Result<(), RetryError> = retry.retry(
-            || {
-                let attempts = attempts_clone.clone();
-                async move {
-                    let current = attempts.fetch_add(1, Ordering::SeqCst);
-                    if current < 2 {
-                        Err("not ready")
-                    } else {
-                        Ok(())
+        let result: Result<(), RetryError> = retry
+            .retry(
+                || {
+                    let attempts = attempts_clone.clone();
+                    async move {
+                        let current = attempts.fetch_add(1, Ordering::SeqCst);
+                        if current < 2 {
+                            Err("not ready")
+                        } else {
+                            Ok(())
+                        }
                     }
-                }
-            },
-            &mut rx,
-        ).await;
+                },
+                &mut rx,
+            )
+            .await;
 
         let elapsed = start.elapsed();
 
@@ -281,23 +274,17 @@ use super::*;
             jitter_factor: 0.1,
         };
 
-        let backoff = ExponentialBackoff::new(
-            config.initial_backoff,
-            config.max_backoff,
-        );
+        let backoff = ExponentialBackoff::new(config.initial_backoff, config.max_backoff);
 
         let mut retry = RetryHandle::new(config, backoff);
         let (tx, mut rx) = tokio::sync::watch::channel(false);
 
-        let result: Result<(), RetryError> = retry.retry(
-            || async { Err("always fails") },
-            &mut rx,
-        ).await;
+        let result: Result<(), RetryError> =
+            retry.retry(|| async { Err("always fails") }, &mut rx).await;
 
         assert!(matches!(result, Err(RetryError::MaxRetriesExceeded(2, _))));
 
         drop(tx);
         Ok(())
     }
-
 }

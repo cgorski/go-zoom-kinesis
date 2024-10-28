@@ -1,11 +1,8 @@
 use crate::store::CheckpointStore;
 use async_trait::async_trait;
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{debug, trace, instrument};
+use tracing::{debug, instrument, trace};
 
 /// In-memory implementation of checkpoint storage
 #[derive(Debug, Default, Clone)]

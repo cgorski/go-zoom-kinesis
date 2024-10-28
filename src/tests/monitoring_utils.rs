@@ -1,56 +1,49 @@
 // tests/monitoring_utils.rs
 
-use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::mpsc;
-use anyhow::{Result, anyhow};
-use tracing::{debug, info};
 use crate::{
-    KinesisProcessor,
-    ProcessorConfig,
     monitoring::{
-        ProcessingEvent,
-        ProcessingEventType,
-        ShardEventType,
-        MetricsAggregator,
-        MonitoringConfig,
+        MetricsAggregator, MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
     },
     test::{
-        mocks::{
-            MockKinesisClient,
-            MockRecordProcessor,
-            MockCheckpointStore,
-        },
+        mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
         TestUtils,
     },
+    KinesisProcessor, ProcessorConfig,
 };
+use anyhow::{anyhow, Result};
+use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 pub async fn setup_test_processor(
     config: ProcessorConfig,
 ) -> Result<(
     KinesisProcessor<MockRecordProcessor, MockKinesisClient, MockCheckpointStore>,
-    mpsc::Receiver<ProcessingEvent>
+    mpsc::Receiver<ProcessingEvent>,
 )> {
     let client = MockKinesisClient::new();
     let processor = MockRecordProcessor::new();
     let store = MockCheckpointStore::new();
 
     // Setup basic mocks
-    client.mock_list_shards(Ok(vec![
-        TestUtils::create_test_shard("shard-1")
-    ])).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
 
-    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+    client
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
 
-    client.mock_get_records(Ok((
-        TestUtils::create_test_records(1),
-        Some("next-iterator".to_string()),
-    ))).await;
+    client
+        .mock_get_records(Ok((
+            TestUtils::create_test_records(1),
+            Some("next-iterator".to_string()),
+        )))
+        .await;
 
     let (processor, monitoring_rx) = KinesisProcessor::new(config, processor, client, store);
 
-    let monitoring_rx = monitoring_rx.ok_or_else(||
-        anyhow!("Monitoring receiver not created")
-    )?;
+    let monitoring_rx = monitoring_rx.ok_or_else(|| anyhow!("Monitoring receiver not created"))?;
 
     Ok((processor, monitoring_rx))
 }
@@ -63,10 +56,9 @@ pub async fn collect_events_with_timing(
     let end_time = Instant::now() + duration;
 
     while Instant::now() < end_time {
-        if let Ok(event) = tokio::time::timeout(
-            Duration::from_millis(100),
-            monitoring_rx.recv()
-        ).await {
+        if let Ok(event) =
+            tokio::time::timeout(Duration::from_millis(100), monitoring_rx.recv()).await
+        {
             if let Some(event) = event {
                 debug!("Received event: {:?}", event);
                 events.push(event);
@@ -117,8 +109,8 @@ pub async fn cleanup_test_monitoring(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::monitoring::IteratorEventType;
-use super::*;
     use tokio::sync::watch;
 
     #[tokio::test]
@@ -139,9 +131,7 @@ use super::*;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Run processor in background
-        let processor_handle = tokio::spawn(async move {
-            processor.run(shutdown_rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor.run(shutdown_rx).await });
 
         // Wait briefly for processing to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -152,8 +142,9 @@ use super::*;
             vec![ProcessingEventType::ShardEvent {
                 event_type: ShardEventType::Started,
                 details: None,
-            }]
-        ).await?;
+            }],
+        )
+        .await?;
 
         // Shutdown processor
         shutdown_tx.send(true)?;
@@ -185,9 +176,9 @@ use super::*;
         let store = MockCheckpointStore::new();
 
         // Setup mock responses
-        client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1")
-        ])).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
 
         client.mock_get_iterator(Ok("iterator-1".to_string())).await;
 
@@ -198,35 +189,26 @@ use super::*;
             TestUtils::create_test_record("seq-3", b"fail"),
         ];
 
-        client.mock_get_records(Ok((
-            test_records,
-            Some("next-iterator".to_string()),
-        ))).await;
+        client
+            .mock_get_records(Ok((test_records, Some("next-iterator".to_string()))))
+            .await;
 
         // Configure processor failures
-        processor.set_failure_sequences(vec![
-            "seq-2".to_string(),
-            "seq-3".to_string(),
-        ]).await;
+        processor
+            .set_failure_sequences(vec!["seq-2".to_string(), "seq-3".to_string()])
+            .await;
 
-        let (processor, mut monitoring_rx) = KinesisProcessor::new(
-            config,
-            processor,
-            client,
-            store,
-        );
+        let (processor, mut monitoring_rx) =
+            KinesisProcessor::new(config, processor, client, store);
 
-        let mut monitoring_rx = monitoring_rx.ok_or_else(||
-            anyhow!("Monitoring receiver not created")
-        )?;
+        let mut monitoring_rx =
+            monitoring_rx.ok_or_else(|| anyhow!("Monitoring receiver not created"))?;
 
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Run processor in background
-        let processor_handle = tokio::spawn(async move {
-            processor.run(shutdown_rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor.run(shutdown_rx).await });
 
         // Collect events
         let events = collect_events_with_timing(&mut monitoring_rx, Duration::from_secs(2)).await;
@@ -235,15 +217,17 @@ use super::*;
         let expected_events = vec![
             ("ShardEvent", "Started"),
             ("Iterator", "Renewed"),
-            ("RecordAttempt", "Success"),  // seq-1
-            ("RecordAttempt", "Retry"),    // seq-2, seq-3
-            ("RecordAttempt", "Failure"),  // seq-2, seq-3 final
+            ("RecordAttempt", "Success"), // seq-1
+            ("RecordAttempt", "Retry"),   // seq-2, seq-3
+            ("RecordAttempt", "Failure"), // seq-2, seq-3 final
             ("ShardEvent", "Completed"),
         ];
 
         // Verify events with detailed logging
         for (event_type, subtype) in &expected_events {
-            let found = events.iter().any(|e| matches_event_type(&e.event_type, event_type, subtype));
+            let found = events
+                .iter()
+                .any(|e| matches_event_type(&e.event_type, event_type, subtype));
             if !found {
                 debug!("Missing event type: {}/{}", event_type, subtype);
                 dump_events(&events);
@@ -272,14 +256,21 @@ use super::*;
                     (ShardEventType::Interrupted, "Interrupted") => true,
                     _ => false,
                 }
-            },
-            (ProcessingEventType::RecordAttempt { success, is_final_attempt, error, .. }, "RecordAttempt", subtype) => {
-                match (success, is_final_attempt, subtype) {
-                    (true, _, "Success") => true,
-                    (false, false, "Retry") => true,
-                    (false, true, "Failure") => true,
-                    _ => false,
-                }
+            }
+            (
+                ProcessingEventType::RecordAttempt {
+                    success,
+                    is_final_attempt,
+                    error,
+                    ..
+                },
+                "RecordAttempt",
+                subtype,
+            ) => match (success, is_final_attempt, subtype) {
+                (true, _, "Success") => true,
+                (false, false, "Retry") => true,
+                (false, true, "Failure") => true,
+                _ => false,
             },
             (ProcessingEventType::Iterator { event_type, .. }, "Iterator", subtype) => {
                 match (event_type, subtype) {
@@ -288,14 +279,14 @@ use super::*;
                     (IteratorEventType::Failed, "Failed") => true,
                     _ => false,
                 }
-            },
+            }
             (ProcessingEventType::Checkpoint { success, .. }, "Checkpoint", subtype) => {
                 match (success, subtype) {
                     (true, "Success") => true,
                     (false, "Failure") => true,
                     _ => false,
                 }
-            },
+            }
             _ => false,
         }
     }
@@ -305,31 +296,38 @@ use super::*;
         sequence: &str,
         expect_success: bool,
     ) -> Result<()> {
-        let record_events: Vec<_> = events.iter()
-            .filter(|e| matches!(
-            &e.event_type,
-            ProcessingEventType::RecordAttempt { sequence_number, .. }
-            if sequence_number == sequence
-        ))
+        let record_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.event_type,
+                    ProcessingEventType::RecordAttempt { sequence_number, .. }
+                    if sequence_number == sequence
+                )
+            })
             .collect();
 
-        assert!(!record_events.is_empty(), "No events found for sequence {}", sequence);
+        assert!(
+            !record_events.is_empty(),
+            "No events found for sequence {}",
+            sequence
+        );
 
         if expect_success {
             assert!(
                 record_events.iter().any(|e| matches!(
-                &e.event_type,
-                ProcessingEventType::RecordAttempt { success: true, .. }
-            )),
+                    &e.event_type,
+                    ProcessingEventType::RecordAttempt { success: true, .. }
+                )),
                 "Expected successful processing for sequence {}",
                 sequence
             );
         } else {
             assert!(
                 record_events.iter().any(|e| matches!(
-                &e.event_type,
-                ProcessingEventType::RecordAttempt { success: false, .. }
-            )),
+                    &e.event_type,
+                    ProcessingEventType::RecordAttempt { success: false, .. }
+                )),
                 "Expected failed processing for sequence {}",
                 sequence
             );

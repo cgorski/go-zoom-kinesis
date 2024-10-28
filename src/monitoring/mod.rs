@@ -8,11 +8,7 @@ mod types;
 
 pub use metrics::{MetricsAggregator, ShardMetrics};
 pub use types::{
-    ProcessingEvent,
-    ProcessingEventType,
-    ShardEventType,
-    IteratorEventType,
-    MonitoringConfig,
+    IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
 };
 
 // Re-export internal types needed by the processor

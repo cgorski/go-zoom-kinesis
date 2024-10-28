@@ -1,12 +1,14 @@
-use std::time::{Duration, SystemTime};
-use aws_sdk_kinesis::{types::{Record, Shard, ShardIteratorType}, Client};
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFluentBuilder;
-use chrono::{DateTime, Utc};
-use tracing::warn;
+use aws_sdk_kinesis::{
+    types::{Record, Shard, ShardIteratorType},
+    Client,
+};
 use aws_smithy_types_convert::date_time::DateTimeExt;
-
+use chrono::{DateTime, Utc};
+use std::time::{Duration, SystemTime};
+use tracing::warn;
 
 #[async_trait]
 pub trait KinesisClientTrait: Send + Sync {
@@ -50,11 +52,7 @@ impl<T: KinesisClientTrait> KinesisClientTestExt for T {}
 #[async_trait]
 impl KinesisClientTrait for Client {
     async fn list_shards(&self, stream_name: &str) -> Result<Vec<Shard>> {
-        let response = self
-            .list_shards()
-            .stream_name(stream_name)
-            .send()
-            .await?;
+        let response = self.list_shards().stream_name(stream_name).send().await?;
         Ok(response.shards.unwrap_or_default())
     }
 
@@ -100,7 +98,8 @@ impl KinesisClientTrait for Client {
                 return Err(anyhow::anyhow!("Shutdown requested").into());
             }
 
-            match self.get_records()
+            match self
+                .get_records()
                 .shard_iterator(iterator)
                 .limit(limit)
                 .send()
@@ -109,7 +108,7 @@ impl KinesisClientTrait for Client {
                 Ok(response) => {
                     return Ok((
                         response.records().to_vec(),
-                        response.next_shard_iterator().map(String::from)
+                        response.next_shard_iterator().map(String::from),
                     ));
                 }
                 Err(e) => {

@@ -1,16 +1,18 @@
 // tests/common/mod.rs
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use go_zoom_kinesis::{ProcessorConfig, store::InMemoryCheckpointStore, CheckpointStore, RecordProcessor};
-use std::time::Duration;
-use tokio::sync::RwLock;
-use tokio::time::Instant;
-use go_zoom_kinesis::test::mocks::{MockKinesisClient, MockRecordProcessor};
-use go_zoom_kinesis::test::TestUtils;
 use anyhow::Result;
 use go_zoom_kinesis::monitoring::MonitoringConfig;
 use go_zoom_kinesis::processor::InitialPosition;
+use go_zoom_kinesis::test::mocks::{MockKinesisClient, MockRecordProcessor};
+use go_zoom_kinesis::test::TestUtils;
+use go_zoom_kinesis::{
+    store::InMemoryCheckpointStore, CheckpointStore, ProcessorConfig, RecordProcessor,
+};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 pub fn create_test_config() -> ProcessorConfig {
     ProcessorConfig {
@@ -58,10 +60,12 @@ impl TestMetrics {
     }
 
     pub async fn record_processing_time(&self, shard_id: &str, duration: Duration) {
-        self.processing_time.write().await.insert(shard_id.to_string(), duration);
+        self.processing_time
+            .write()
+            .await
+            .insert(shard_id.to_string(), duration);
     }
 }
-
 
 pub struct TestContext {
     pub config: ProcessorConfig,
@@ -103,7 +107,12 @@ impl TestEventLog {
         }
     }
 
-    pub async fn log(&self, event_type: TestEventType, shard_id: Option<String>, error: Option<String>) {
+    pub async fn log(
+        &self,
+        event_type: TestEventType,
+        shard_id: Option<String>,
+        error: Option<String>,
+    ) {
         let event = TestEvent {
             timestamp: std::time::Instant::now(),
             event_type,
@@ -130,16 +139,19 @@ impl TestContext {
         }
     }
 
-
     pub async fn setup_basic_mocks(&self) -> Result<()> {
-        self.client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1")
-        ])).await;
-        self.client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-        self.client.mock_get_records(Ok((
-            TestUtils::create_test_records(1),
-            Some("next-iterator".to_string()),
-        ))).await;
+        self.client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        self.client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        self.client
+            .mock_get_records(Ok((
+                TestUtils::create_test_records(1),
+                Some("next-iterator".to_string()),
+            )))
+            .await;
         Ok(())
     }
 }
@@ -147,16 +159,18 @@ impl TestContext {
 // Add test utilities for verifying shard processing
 
 pub async fn verify_processing_complete(
-    processor: &MockRecordProcessor,  // Change to specific type instead of impl RecordProcessor
+    processor: &MockRecordProcessor, // Change to specific type instead of impl RecordProcessor
     expected_records: usize,
     timeout: Duration,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while processor.get_process_count().await < expected_records {
         if start.elapsed() > timeout {
-            anyhow::bail!("Timeout waiting for {} records to be processed, got {}",
+            anyhow::bail!(
+                "Timeout waiting for {} records to be processed, got {}",
                 expected_records,
-                processor.get_process_count().await);
+                processor.get_process_count().await
+            );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

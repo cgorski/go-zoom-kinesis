@@ -1,19 +1,20 @@
-use chrono::{DateTime, Utc};
-use crate::{store::CheckpointStore, processor::RecordProcessor, client::KinesisClientTrait, retry::Backoff, ProcessorError, error::ProcessingError, ProcessorConfig};
-use aws_sdk_kinesis::{
-    types::{Record, Shard, ShardIteratorType},
+use crate::{
+    client::KinesisClientTrait, error::ProcessingError, processor::RecordProcessor, retry::Backoff,
+    store::CheckpointStore, ProcessorConfig, ProcessorError,
 };
 use async_trait::async_trait;
+use aws_sdk_kinesis::types::{Record, Shard, ShardIteratorType};
+use chrono::{DateTime, Utc};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, RwLock, mpsc::Sender};
-use parking_lot;
 use anyhow::Result;
+use parking_lot;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::{debug, trace};
 
@@ -47,18 +48,15 @@ impl MockKinesisClient {
         self.get_iterator_responses.lock().await.push_back(response);
     }
 
-    pub async fn mock_get_records(
-        &self,
-        response: Result<(Vec<Record>, Option<String>)>
-    ) {
+    pub async fn mock_get_records(&self, response: Result<(Vec<Record>, Option<String>)>) {
         self.get_records_responses.lock().await.push_back(response);
     }
 
     pub async fn mock_default_responses(&self) {
-        self.get_records_responses.lock().await.push_back(Ok((
-            vec![],
-            Some("default-iterator".to_string()),
-        )));
+        self.get_records_responses
+            .lock()
+            .await
+            .push_back(Ok((vec![], Some("default-iterator".to_string()))));
     }
 }
 
@@ -102,21 +100,19 @@ impl KinesisClientTrait for MockKinesisClient {
             }
 
             match self.get_records_responses.lock().await.pop_front() {
-                Some(result) => {
-                    match result {
-                        Ok(response) => return Ok(response),
-                        Err(e) => {
-                            current_retry += 1;
-                            if current_retry > max_retries.unwrap_or(3) {
-                                return Err(e);
-                            }
-
-                            let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
-                            tokio::time::sleep(delay).await;
-                            continue;
+                Some(result) => match result {
+                    Ok(response) => return Ok(response),
+                    Err(e) => {
+                        current_retry += 1;
+                        if current_retry > max_retries.unwrap_or(3) {
+                            return Err(e);
                         }
+
+                        let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
+                        tokio::time::sleep(delay).await;
+                        continue;
                     }
-                }
+                },
                 None => return Ok((vec![], None)),
             }
         }
@@ -137,7 +133,6 @@ pub struct MockRecordProcessor {
     expected_attempts: Arc<RwLock<HashMap<String, u32>>>,
     config: Arc<RwLock<Option<ProcessorConfig>>>,
     processing_times: Arc<RwLock<HashMap<String, Duration>>>,
-
 }
 impl Default for MockRecordProcessor {
     fn default() -> Self {
@@ -163,15 +158,20 @@ impl MockRecordProcessor {
         }
     }
 
-
-
     pub async fn get_processing_times(&self) -> HashMap<String, Duration> {
         self.processing_times.read().await.clone()
     }
 
-
-    async fn record_attempt(&self, sequence: &str, success: bool, attempt: u32, error: Option<String>, duration: Duration) {
-        let max_attempts = self.expected_attempts
+    async fn record_attempt(
+        &self,
+        sequence: &str,
+        success: bool,
+        attempt: u32,
+        error: Option<String>,
+        duration: Duration,
+    ) {
+        let max_attempts = self
+            .expected_attempts
             .read()
             .await
             .get(sequence)
@@ -182,10 +182,15 @@ impl MockRecordProcessor {
 
         if let Some(tx) = &*self.error_tx.lock().await {
             let msg = if success {
-                format!("Successfully processed sequence {} on attempt {}", sequence, attempt)
+                format!(
+                    "Successfully processed sequence {} on attempt {}",
+                    sequence, attempt
+                )
             } else {
-                format!("Failed to process sequence {} on attempt {} (final: {}): {:?}",
-                        sequence, attempt, is_final, error)
+                format!(
+                    "Failed to process sequence {} on attempt {} (final: {}): {:?}",
+                    sequence, attempt, is_final, error
+                )
             };
             let _ = tx.send(msg).await;
         }
@@ -194,10 +199,10 @@ impl MockRecordProcessor {
             *self.error_count.write().await += 1;
         }
 
-        self.processing_times.write().await.insert(
-            sequence.to_string(),
-            duration
-        );
+        self.processing_times
+            .write()
+            .await
+            .insert(sequence.to_string(), duration);
     }
 
     async fn check_timeout(&self, start: Instant, sequence: &str) -> Result<(), ProcessingError> {
@@ -205,45 +210,53 @@ impl MockRecordProcessor {
             let elapsed = start.elapsed();
             if elapsed > config.processing_timeout {
                 // Record the timeout
-                self.processing_times.write().await.insert(
-                    sequence.to_string(),
-                    elapsed
-                );
+                self.processing_times
+                    .write()
+                    .await
+                    .insert(sequence.to_string(), elapsed);
                 *self.error_count.write().await += 1;
 
-                return Err(ProcessingError::SoftFailure(
-                    anyhow::anyhow!(
-                        "Processing timeout after {:?} (limit: {:?})",
-                        elapsed,
-                        config.processing_timeout
-                    )
-                ));
+                return Err(ProcessingError::SoftFailure(anyhow::anyhow!(
+                    "Processing timeout after {:?} (limit: {:?})",
+                    elapsed,
+                    config.processing_timeout
+                )));
             }
         }
         Ok(())
     }
 
     async fn record_processing_time(&self, sequence: &str, duration: Duration) {
-        self.processing_times.write().await.insert(
-            sequence.to_string(),
-            duration
-        );
+        self.processing_times
+            .write()
+            .await
+            .insert(sequence.to_string(), duration);
     }
 
     async fn record_error(&self, sequence: &str, message: &str) {
         *self.error_count.write().await += 1;
         if let Some(tx) = self.error_tx.lock().await.as_ref() {
-            let _ = tx.send(format!("Error processing sequence {}: {}", sequence, message)).await;
+            let _ = tx
+                .send(format!(
+                    "Error processing sequence {}: {}",
+                    sequence, message
+                ))
+                .await;
         }
     }
 
     async fn record_success(&self, sequence: &str, record: &Record, duration: Duration) {
         self.processed_records.write().await.push(record.clone());
         *self.process_count.write().await += 1;
-        self.processing_times.write().await.insert(sequence.to_string(), duration);
+        self.processing_times
+            .write()
+            .await
+            .insert(sequence.to_string(), duration);
 
         if let Some(tx) = self.error_tx.lock().await.as_ref() {
-            let _ = tx.send(format!("Successfully processed sequence {}", sequence)).await;
+            let _ = tx
+                .send(format!("Successfully processed sequence {}", sequence))
+                .await;
         }
     }
 
@@ -253,7 +266,6 @@ impl MockRecordProcessor {
     pub async fn set_config(&self, config: ProcessorConfig) {
         *self.config.write().await = Some(config);
     }
-
 
     pub async fn set_failure_sequences(&self, sequences: Vec<String>) {
         debug!(
@@ -267,8 +279,8 @@ impl MockRecordProcessor {
 
         for sequence in sequences {
             failure_seqs.insert(sequence.clone());
-            failure_types.insert(sequence.clone(), "soft".to_string());  // Default to soft failure
-            expected_attempts.insert(sequence.clone(), 3);  // Default to 3 attempts
+            failure_types.insert(sequence.clone(), "soft".to_string()); // Default to soft failure
+            expected_attempts.insert(sequence.clone(), 3); // Default to 3 attempts
 
             debug!(
                 sequence = %sequence,
@@ -277,13 +289,20 @@ impl MockRecordProcessor {
         }
     }
 
-
-
     // Add a more explicit configuration method
     pub async fn configure_failure(&self, sequence: String, failure_type: &str, max_attempts: u32) {
-        self.failure_sequences.write().await.insert(sequence.clone());
-        self.failure_types.write().await.insert(sequence.clone(), failure_type.to_string());
-        self.expected_attempts.write().await.insert(sequence.clone(), max_attempts);
+        self.failure_sequences
+            .write()
+            .await
+            .insert(sequence.clone());
+        self.failure_types
+            .write()
+            .await
+            .insert(sequence.clone(), failure_type.to_string());
+        self.expected_attempts
+            .write()
+            .await
+            .insert(sequence.clone(), max_attempts);
 
         debug!(
             sequence = %sequence,
@@ -297,11 +316,8 @@ impl MockRecordProcessor {
         *self.should_fail.write().await = should_fail;
         if should_fail {
             // Add a failure sequence for testing
-            self.set_failure_sequence(
-                "test-sequence".to_string(),
-                "soft".to_string(),
-                1
-            ).await;
+            self.set_failure_sequence("test-sequence".to_string(), "soft".to_string(), 1)
+                .await;
         }
     }
 
@@ -326,14 +342,24 @@ impl MockRecordProcessor {
             expected_attempts
         );
 
-        self.failure_sequences.write().await.insert(sequence.clone());
-        self.failure_types.write().await.insert(sequence.clone(), failure_type);
-        self.expected_attempts.write().await.insert(sequence, expected_attempts);
+        self.failure_sequences
+            .write()
+            .await
+            .insert(sequence.clone());
+        self.failure_types
+            .write()
+            .await
+            .insert(sequence.clone(), failure_type);
+        self.expected_attempts
+            .write()
+            .await
+            .insert(sequence, expected_attempts);
     }
 
     pub async fn configure_failures(&self, failures: Vec<(String, String, u32)>) {
         for (sequence, failure_type, attempts) in failures {
-            self.set_failure_sequence(sequence, failure_type, attempts).await;
+            self.set_failure_sequence(sequence, failure_type, attempts)
+                .await;
         }
     }
 
@@ -351,11 +377,15 @@ impl MockRecordProcessor {
 
     pub async fn was_record_processed(&self, sequence: &str) -> bool {
         let processed_records = self.processed_records.read().await;
-        processed_records.iter().any(|r| r.sequence_number() == sequence)
+        processed_records
+            .iter()
+            .any(|r| r.sequence_number() == sequence)
     }
 
     pub async fn get_failure_attempts(&self, sequence: &str) -> usize {
-        self.failure_attempts.read().await
+        self.failure_attempts
+            .read()
+            .await
             .get(sequence)
             .copied()
             .unwrap_or(0)
@@ -379,37 +409,37 @@ impl MockRecordProcessor {
                             "Hard failure sequence {} had {} attempts, expected 1",
                             sequence, actual_attempts
                         );
-                    },
+                    }
                     "soft" => {
                         assert_eq!(
                             actual_attempts, expected as usize,
                             "Soft failure sequence {} had {} attempts, expected {}",
                             sequence, actual_attempts, expected
                         );
-                    },
+                    }
                     "partial" => {
                         assert!(
                             actual_attempts <= expected as usize,
                             "Partial failure sequence {} had {} attempts, expected <= {}",
-                            sequence, actual_attempts, expected
+                            sequence,
+                            actual_attempts,
+                            expected
                         );
-                    },
+                    }
                     _ => anyhow::bail!("Unknown failure type: {}", ftype),
                 }
                 Ok(())
-            },
+            }
             _ => Ok(()),
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 struct FailureConfig {
     max_attempts: u32,
     failure_type: String,
 }
-
 
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {
@@ -433,12 +463,16 @@ impl RecordProcessor for MockRecordProcessor {
 
         // Process based on failure configuration
         if self.failure_sequences.read().await.contains(&sequence) {
-            let failure_type = self.failure_types.read().await
+            let failure_type = self
+                .failure_types
+                .read()
+                .await
                 .get(&sequence)
                 .cloned()
                 .unwrap_or_else(|| "soft".to_string());
 
-            let max_attempts = self.expected_attempts
+            let max_attempts = self
+                .expected_attempts
                 .read()
                 .await
                 .get(&sequence)
@@ -458,24 +492,42 @@ impl RecordProcessor for MockRecordProcessor {
             match failure_type.as_str() {
                 "hard" => {
                     let error = format!("Simulated hard failure for sequence {}", sequence);
-                    self.record_attempt(&sequence, false, current_attempts as u32, Some(error.clone()), duration).await;
-                    return Err(ProcessingError::HardFailure(
-                        anyhow::anyhow!(error)
-                    ));
+                    self.record_attempt(
+                        &sequence,
+                        false,
+                        current_attempts as u32,
+                        Some(error.clone()),
+                        duration,
+                    )
+                    .await;
+                    return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
-                    if current_attempts < max_attempts  as usize{
+                    if current_attempts < max_attempts as usize {
                         let error = format!("Simulated soft failure for sequence {}", sequence);
-                        self.record_attempt(&sequence, false, current_attempts as u32, Some(error.clone()), duration).await;
-                        return Err(ProcessingError::SoftFailure(
-                            anyhow::anyhow!(error)
-                        ));
+                        self.record_attempt(
+                            &sequence,
+                            false,
+                            current_attempts as u32,
+                            Some(error.clone()),
+                            duration,
+                        )
+                        .await;
+                        return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     } else if is_final {
-                        let error = format!("Final soft failure for sequence {} after {} attempts", sequence, current_attempts);
-                        self.record_attempt(&sequence, false, current_attempts as u32, Some(error.clone()), duration).await;
-                        return Err(ProcessingError::SoftFailure(
-                            anyhow::anyhow!(error)
-                        ));
+                        let error = format!(
+                            "Final soft failure for sequence {} after {} attempts",
+                            sequence, current_attempts
+                        );
+                        self.record_attempt(
+                            &sequence,
+                            false,
+                            current_attempts as u32,
+                            Some(error.clone()),
+                            duration,
+                        )
+                        .await;
+                        return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     }
                 }
                 _ => {}
@@ -486,7 +538,8 @@ impl RecordProcessor for MockRecordProcessor {
         let duration = start_time.elapsed();
         self.processed_records.write().await.push(record.clone());
         *self.process_count.write().await += 1;
-        self.record_attempt(&sequence, true, current_attempts as u32, None, duration).await;
+        self.record_attempt(&sequence, true, current_attempts as u32, None, duration)
+            .await;
 
         Ok(())
     }
@@ -506,11 +559,17 @@ impl MockCheckpointStore {
     }
 
     pub async fn mock_get_checkpoint(&self, response: Result<Option<String>>) {
-        self.get_checkpoint_responses.lock().await.push_back(response);
+        self.get_checkpoint_responses
+            .lock()
+            .await
+            .push_back(response);
     }
 
     pub async fn mock_save_checkpoint(&self, response: Result<()>) {
-        self.save_checkpoint_responses.lock().await.push_back(response);
+        self.save_checkpoint_responses
+            .lock()
+            .await
+            .push_back(response);
     }
 
     pub async fn get_save_count(&self) -> usize {
@@ -540,10 +599,10 @@ impl CheckpointStore for MockCheckpointStore {
         if let Some(response) = self.save_checkpoint_responses.lock().await.pop_front() {
             response
         } else {
-            self.checkpoints.write().await.insert(
-                shard_id.to_string(),
-                sequence_number.to_string(),
-            );
+            self.checkpoints
+                .write()
+                .await
+                .insert(shard_id.to_string(), sequence_number.to_string());
             *self.save_count.write().await += 1;
             Ok(())
         }
@@ -598,26 +657,30 @@ mod tests {
         let client = MockKinesisClient::new();
 
         // Test list_shards
-        client.mock_list_shards(Ok(vec![
-            Shard::builder()
+        client
+            .mock_list_shards(Ok(vec![Shard::builder()
                 .shard_id("shard-1")
                 .build()
-                .expect("Failed to build test shard")
-        ])).await;
+                .expect("Failed to build test shard")]))
+            .await;
 
         let shards = client.list_shards("test-stream").await?;
         assert_eq!(shards.len(), 1);
         assert_eq!(shards[0].shard_id(), "shard-1");
 
         // Test get_iterator
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-        let iterator = client.get_shard_iterator(
-            "test-stream",
-            "shard-1",
-            ShardIteratorType::TrimHorizon,
-            None,
-            None,  // Add timestamp parameter
-        ).await?;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        let iterator = client
+            .get_shard_iterator(
+                "test-stream",
+                "shard-1",
+                ShardIteratorType::TrimHorizon,
+                None,
+                None, // Add timestamp parameter
+            )
+            .await?;
         assert_eq!(iterator, "test-iterator");
 
         // Test get_records
@@ -628,19 +691,14 @@ mod tests {
             .build()
             .expect("Failed to build test record");
 
-        client.mock_get_records(Ok((
-            vec![test_record],
-            Some("next-iterator".to_string()),
-        ))).await;
+        client
+            .mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string()))))
+            .await;
 
         let (tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-        let (records, next_iterator) = client.get_records(
-            "test-iterator",
-            100,
-            0,
-            Some(3),
-            &mut shutdown_rx,
-        ).await?;
+        let (records, next_iterator) = client
+            .get_records("test-iterator", 100, 0, Some(3), &mut shutdown_rx)
+            .await?;
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].sequence_number(), "seq-1");
@@ -656,11 +714,9 @@ mod tests {
         let processor = MockRecordProcessor::new();
 
         // Configure a test failure
-        processor.set_failure_sequence(
-            "test-seq".to_string(),
-            "hard".to_string(),
-            1,
-        ).await;
+        processor
+            .set_failure_sequence("test-seq".to_string(), "hard".to_string(), 1)
+            .await;
 
         let record = Record::builder()
             .sequence_number("test-seq")
@@ -686,7 +742,9 @@ mod tests {
         assert_eq!(store.get_save_count().await, 1);
 
         // Test mocked responses
-        store.mock_save_checkpoint(Err(anyhow::anyhow!("Simulated failure"))).await;
+        store
+            .mock_save_checkpoint(Err(anyhow::anyhow!("Simulated failure")))
+            .await;
         assert!(store.save_checkpoint("shard-1", "seq-2").await.is_err());
 
         Ok(())

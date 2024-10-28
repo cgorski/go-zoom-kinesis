@@ -51,7 +51,6 @@ pub enum ProcessorError {
     Other(#[from] anyhow::Error),
 }
 
-
 impl From<tokio::sync::mpsc::error::SendError<()>> for ProcessorError {
     fn from(err: tokio::sync::mpsc::error::SendError<()>) -> Self {
         ProcessorError::Other(anyhow::anyhow!("Channel send error: {}", err))
@@ -66,10 +65,10 @@ pub type Result<T> = std::result::Result<T, ProcessorError>;
 pub enum RetryError {
     #[error("Operation timed out after {0:?}")]
     Timeout(Duration),
-    
+
     #[error("Maximum retries ({0}) exceeded: {1}")]
     MaxRetriesExceeded(u32, String),
-    
+
     #[error("Backoff interrupted")]
     Interrupted,
 }
@@ -79,10 +78,10 @@ pub enum RetryError {
 pub enum CheckpointError {
     #[error("Failed to save checkpoint: {0}")]
     SaveFailed(String),
-    
+
     #[error("Failed to retrieve checkpoint: {0}")]
     RetrieveFailed(String),
-    
+
     #[error("Invalid checkpoint data: {0}")]
     InvalidData(String),
 }
@@ -92,10 +91,10 @@ pub enum CheckpointError {
 pub enum ShardError {
     #[error("Failed to refresh shards: {0}")]
     RefreshFailed(String),
-    
+
     #[error("Invalid shard ID: {0}")]
     InvalidShardId(String),
-    
+
     #[error("Shard has been closed")]
     ShardClosed,
 }
@@ -116,10 +115,9 @@ impl From<RetryError> for ProcessorError {
     fn from(err: RetryError) -> Self {
         match err {
             RetryError::Timeout(d) => ProcessorError::ProcessingTimeout(d),
-            RetryError::MaxRetriesExceeded(attempts, msg) => 
-                ProcessorError::MaxRetriesExceeded(
-                    format!("After {} attempts: {}", attempts, msg)
-                ),
+            RetryError::MaxRetriesExceeded(attempts, msg) => {
+                ProcessorError::MaxRetriesExceeded(format!("After {} attempts: {}", attempts, msg))
+            }
             RetryError::Interrupted => ProcessorError::Shutdown,
         }
     }
@@ -139,12 +137,18 @@ mod tests {
         // Test ShardError conversion
         let shard_err = ShardError::RefreshFailed("test".to_string());
         let processor_err: ProcessorError = shard_err.into();
-        assert!(matches!(processor_err, ProcessorError::ShardRefreshError(_)));
+        assert!(matches!(
+            processor_err,
+            ProcessorError::ShardRefreshError(_)
+        ));
 
         // Test RetryError conversion
         let retry_err = RetryError::MaxRetriesExceeded(3, "test".to_string());
         let processor_err: ProcessorError = retry_err.into();
-        assert!(matches!(processor_err, ProcessorError::MaxRetriesExceeded(_)));
+        assert!(matches!(
+            processor_err,
+            ProcessorError::MaxRetriesExceeded(_)
+        ));
     }
 
     #[test]
