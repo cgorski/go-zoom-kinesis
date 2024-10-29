@@ -47,9 +47,8 @@ jobs:
           cargo doc --no-deps --all-features --document-private-items
           cargo test --doc --all-features
           
-          # Move contents up one directory level
-          mv target/doc/go_zoom_kinesis/* target/doc/
-          rmdir target/doc/go_zoom_kinesis
+          # Create redirect index.html
+          echo '<meta http-equiv="refresh" content="0; url=go_zoom_kinesis/index.html">' > target/doc/index.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
