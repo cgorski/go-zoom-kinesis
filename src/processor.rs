@@ -1105,36 +1105,8 @@ mod tests {
 
     use tracing_subscriber::EnvFilter;
 
-    // Add TestContext implementation for the processor tests
-    struct TestContext {
-        pub config: ProcessorConfig,
-        pub client: MockKinesisClient,
-        pub processor: MockRecordProcessor,
-        pub store: MockCheckpointStore,
-    }
 
-    impl TestContext {
-        fn new() -> Self {
-            Self {
-                config: ProcessorConfig {
-                    stream_name: "test-stream".to_string(),
-                    batch_size: 100,
-                    api_timeout: Duration::from_secs(1),
-                    processing_timeout: Duration::from_secs(1),
-                    total_timeout: None,
-                    max_retries: Some(2),
-                    shard_refresh_interval: Duration::from_secs(1),
-                    max_concurrent_shards: None,
-                    monitoring: MonitoringConfig::default(),
-                    initial_position: InitialPosition::TrimHorizon,
-                    prefer_stored_checkpoint: true,
-                },
-                client: MockKinesisClient::new(),
-                processor: MockRecordProcessor::new(),
-                store: MockCheckpointStore::new(),
-            }
-        }
-    }
+
 
     // Add this static for one-time initialization
     static INIT: Once = Once::new();
@@ -1486,23 +1458,5 @@ mod tests {
         Ok(())
     }
 
-    // Helper function to verify processing completion
-    async fn verify_processing_complete(
-        processor: &MockRecordProcessor,
-        expected_count: usize,
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        let start = std::time::Instant::now();
-        while processor.get_process_count().await < expected_count {
-            if start.elapsed() > timeout {
-                anyhow::bail!(
-                    "Timeout waiting for {} records to be processed, got {}",
-                    expected_count,
-                    processor.get_process_count().await
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Ok(())
-    }
+   
 }
