@@ -1,9 +1,9 @@
 //! Checkpoint storage implementations for the Kinesis processor
 
 use async_trait::async_trait;
-#[cfg(test)]
+#[allow(unused_imports)]
 use std::collections::HashMap;
-#[cfg(test)]
+#[allow(unused_imports)]
 use tokio::time::Duration;
 
 #[cfg(feature = "dynamodb-store")]

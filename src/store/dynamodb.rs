@@ -1,9 +1,10 @@
+use anyhow::Context;
 #[cfg(feature = "dynamodb-store")]
 use {
     crate::store::CheckpointStore,
     async_trait::async_trait,
     aws_sdk_dynamodb::{types::AttributeValue, Client as DynamoClient},
-    tracing::{debug, error, instrument, trace},
+    tracing::{debug, instrument, trace},
 };
 
 #[cfg(feature = "dynamodb-store")]
@@ -39,6 +40,7 @@ impl DynamoDbCheckpointStore {
 #[async_trait]
 impl CheckpointStore for DynamoDbCheckpointStore {
     #[instrument(skip(self), fields(table = %self.table_name, prefix = %self.key_prefix))]
+    #[instrument(skip(self), fields(table = %self.table_name, prefix = %self.key_prefix))]
     async fn get_checkpoint(&self, shard_id: &str) -> anyhow::Result<Option<String>> {
         let key = self.prefixed_key(shard_id);
 
@@ -59,9 +61,8 @@ impl CheckpointStore for DynamoDbCheckpointStore {
 
         let checkpoint = response
             .item
-            .and_then(|item| item.get("sequence_number"))
-            .and_then(|attr| attr.as_s().ok())
-            .map(|s| s.to_string());
+            .and_then(|item| item.get("sequence_number").cloned())
+            .and_then(|attr| attr.as_s().ok().map(|s| s.to_string()));
 
         debug!(
             shard_id = %shard_id,
@@ -109,6 +110,7 @@ impl CheckpointStore for DynamoDbCheckpointStore {
 
 #[cfg(all(test, feature = "dynamodb-store"))]
 mod tests {
+
     use super::*;
     use aws_credential_types::Credentials;
     use aws_sdk_dynamodb::config::Builder;
@@ -118,7 +120,7 @@ mod tests {
 
         let config = Builder::new()
             .credentials_provider(creds)
-            .region(aws_sdk_dynamodb::Region::new("us-east-1"))
+            .region(aws_config::Region::new("us-east-1"))
             .build();
 
         DynamoClient::from_conf(config)

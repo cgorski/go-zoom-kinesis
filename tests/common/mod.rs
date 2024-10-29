@@ -1,8 +1,10 @@
 // tests/common/mod.rs
+#[allow(unused_imports)]
 use anyhow::Result;
 use go_zoom_kinesis::monitoring::MonitoringConfig;
 use go_zoom_kinesis::processor::InitialPosition;
 use go_zoom_kinesis::test::mocks::{MockKinesisClient, MockRecordProcessor};
+#[allow(unused_imports)]
 use go_zoom_kinesis::test::TestUtils;
 use go_zoom_kinesis::{store::InMemoryCheckpointStore, ProcessorConfig};
 
