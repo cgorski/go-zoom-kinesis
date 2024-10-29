@@ -1,15 +1,13 @@
 use anyhow::Result;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::Semaphore;
-use tracing::info;
+use std::time::Duration;
 
 mod common;
 
 use common::{verify_processing_complete, TestContext};
-use go_zoom_kinesis::{CheckpointStore, KinesisProcessor, ProcessorError};
+use go_zoom_kinesis::{CheckpointStore, KinesisProcessor};
 
 #[cfg(feature = "test-utils")]
-use go_zoom_kinesis::test::{mocks::*, TestUtils};
+use go_zoom_kinesis::test::TestUtils;
 
 #[tokio::test]
 async fn test_multiple_shard_processing() -> Result<()> {

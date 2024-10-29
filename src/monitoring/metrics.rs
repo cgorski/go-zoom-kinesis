@@ -1,7 +1,6 @@
 use super::types::{IteratorEventType, ProcessingEvent, ProcessingEventType, ShardEventType};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -11,26 +10,11 @@ use tracing::{debug, info, warn};
 
 #[derive(Debug, Default)]
 pub struct ProcessingMetrics {
-    pub records_processed: AtomicU64,
-    pub records_failed: AtomicU64,
-    pub checkpoint_successes: AtomicU64,
-    pub checkpoint_failures: AtomicU64,
-    pub processing_times: Arc<RwLock<Vec<Duration>>>,
-    pub checkpoint_times: Arc<RwLock<Vec<Duration>>>,
+
 }
 
-impl ProcessingMetrics {
-    pub async fn record_checkpoint_result(&self, success: bool, duration: Duration) {
-        if success {
-            self.checkpoint_successes.fetch_add(1, Ordering::SeqCst);
-        } else {
-            self.checkpoint_failures.fetch_add(1, Ordering::SeqCst);
-        }
 
-        let mut times = self.checkpoint_times.write().await;
-        times.push(duration);
-    }
-}
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BatchMetrics {
     pub successful_count: usize,

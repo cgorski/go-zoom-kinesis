@@ -1,22 +1,16 @@
 use crate::common::TestContext;
-use crate::common::{TestEventLog, TestEventType};
+use crate::common::TestEventType;
 use anyhow::Result;
 use aws_sdk_kinesis::types::Record;
-use go_zoom_kinesis::monitoring::ProcessingEvent;
 use go_zoom_kinesis::monitoring::{MonitoringConfig, ProcessingEventType};
 use go_zoom_kinesis::{
-    store::InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig, RecordProcessor,
+    store::InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig,
 };
 use go_zoom_kinesis::{CheckpointStore, ProcessorError};
-use rand::Rng;
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Once};
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, RwLock};
 use tokio::time::Instant;
 use tracing::error;
 use tracing::warn;
@@ -29,7 +23,6 @@ use go_zoom_kinesis::test::{mocks::*, TestUtils};
 
 // At the start of the test file
 use go_zoom_kinesis::processor::InitialPosition;
-use tracing_subscriber::{fmt, EnvFilter};
 
 // 1. Create a static variable that can only be executed once
 static INIT: Once = Once::new();
@@ -218,7 +211,7 @@ async fn test_basic_timeout_detection() -> anyhow::Result<()> {
         )))
         .await;
 
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (_tx, rx) = tokio::sync::watch::channel(false);
     let (processor, _) = KinesisProcessor::new(config, processor.clone(), client, store);
 
     debug!("Starting processor with {}ms timeout", TIMEOUT.as_millis());
@@ -458,7 +451,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
         .await;
     tracing::debug!("Configured initial failure for list_shards");
 
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (_tx, rx) = tokio::sync::watch::channel(false);
     let (error_tx, mut error_rx) = tokio::sync::mpsc::channel(10);
 
     // Clone the processor and set up error sender
@@ -525,7 +518,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
     let start_time = events
         .first()
         .map(|e| e.timestamp)
-        .unwrap_or_else(|| std::time::Instant::now());
+        .unwrap_or_else(std::time::Instant::now);
 
     println!("\nEvent Timeline:");
     for event in events.iter() {
@@ -710,43 +703,40 @@ async fn test_hard_vs_soft_failures() -> anyhow::Result<()> {
             processor_result?;
         }
 
-        monitoring_result = async {
+        _ = async {
             while let Some(event) = monitoring_rx.recv().await {
                 events.push(event.clone());
 
                 // Analyze monitoring events
-                match &event.event_type {
-                    ProcessingEventType::RecordAttempt {
+                if let ProcessingEventType::RecordAttempt {
                         sequence_number,
                         attempt_number,
                         success,
                         error,
                         ..
-                    } => {
-                        debug!(
-                            "Processing attempt: sequence={}, attempt={}, success={}",
-                            sequence_number, attempt_number, success
-                        );
+                    } = &event.event_type {
+                    debug!(
+                        "Processing attempt: sequence={}, attempt={}, success={}",
+                        sequence_number, attempt_number, success
+                    );
 
-                        // Track soft failure completion
-                        if sequence_number == "1" && *attempt_number >= 3 {
-                            soft_failure_clone.store(true, Ordering::SeqCst);
-                        }
-
-                        // Track hard failure
-                        if sequence_number == "2" && error.is_some() {
-                            hard_failure_clone.store(true, Ordering::SeqCst);
-                        }
-
-                        // Check if we can complete the test
-                        if soft_failure_clone.load(Ordering::SeqCst) &&
-                           hard_failure_clone.load(Ordering::SeqCst) {
-                            debug!("Test conditions met, initiating shutdown");
-                            tx.send(true)?;
-                            break;
-                        }
+                    // Track soft failure completion
+                    if sequence_number == "1" && *attempt_number >= 3 {
+                        soft_failure_clone.store(true, Ordering::SeqCst);
                     }
-                    _ => {}
+
+                    // Track hard failure
+                    if sequence_number == "2" && error.is_some() {
+                        hard_failure_clone.store(true, Ordering::SeqCst);
+                    }
+
+                    // Check if we can complete the test
+                    if soft_failure_clone.load(Ordering::SeqCst) &&
+                       hard_failure_clone.load(Ordering::SeqCst) {
+                        debug!("Test conditions met, initiating shutdown");
+                        tx.send(true)?;
+                        break;
+                    }
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -866,7 +856,7 @@ async fn test_parallel_processing_stress() -> anyhow::Result<()> {
     let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
 
     let start_time = std::time::Instant::now();
-    let processor_handle = tokio::spawn(async move { processor_instance.run(shutdown_rx).await });
+     tokio::spawn(async move { processor_instance.run(shutdown_rx).await });
 
     // Wait for processing to complete or timeout
     let result = tokio::select! {
@@ -889,7 +879,7 @@ async fn test_parallel_processing_stress() -> anyhow::Result<()> {
     // Shutdown
     info!("Sending shutdown signal");
     shutdown_tx.send(true)?;
-    let process_result = processor_handle.await?;
+
 
     // Gather results
     let elapsed = start_time.elapsed();

@@ -149,69 +149,7 @@ where
         error.to_string().contains("Iterator expired")
     }
 
-    async fn get_iterator_with_retries(
-        &self,
-        shard_id: &str,
-        iterator_type: ShardIteratorType,
-        sequence_number: Option<&str>,
-        timestamp: Option<&DateTime<Utc>>,
-        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<String> {
-        let mut retry_count = 0;
-        let max_retries = self.config.max_retries.unwrap_or(3);
 
-        loop {
-            tokio::select! {
-                iterator_result = self.client.get_shard_iterator(
-                    &self.config.stream_name,
-                    shard_id,
-                    iterator_type.clone(),
-                    sequence_number,
-                    timestamp,
-                ) => {
-                    match iterator_result {
-                        Ok(it) => {
-                            debug!(
-                                shard_id = %shard_id,
-                                "Successfully acquired iterator"
-                            );
-                            return Ok(it);
-                        }
-                        Err(e) => {
-                            retry_count += 1;
-                            if retry_count > max_retries {
-                                error!(
-                                    error = %e,
-                                    shard_id = %shard_id,
-                                    "Failed to get iterator after {} retries",
-                                    retry_count
-                                );
-                                return Err(ProcessorError::GetIteratorFailed(e.to_string()));
-                            }
-
-                            warn!(
-                                error = %e,
-                                shard_id = %shard_id,
-                                attempt = retry_count,
-                                "Failed to get iterator, will retry"
-                            );
-
-                            let delay = Duration::from_millis(100 * (2_u64.pow(retry_count - 1)));
-                            tokio::time::sleep(delay).await;
-                            continue;
-                        }
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    info!(
-                        shard_id = %shard_id,
-                        "Shutdown signal received during iterator acquisition"
-                    );
-                    return Err(ProcessorError::Shutdown);
-                }
-            }
-        }
-    }
 }
 
 pub struct KinesisProcessor<P, C, S>
@@ -313,7 +251,7 @@ where
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<bool> {
         let sequence = record.sequence_number().to_string();
-        let start_time = Instant::now();
+
         let mut attempt = 0;
         let max_retries = ctx.config.max_retries.unwrap_or(2);
 
@@ -637,47 +575,7 @@ where
 
         Ok(result)
     }
-    async fn handle_checkpointing(
-        ctx: &ProcessingContext<P, C, S>,
-        shard_id: &str,
-        state: &mut ShardProcessingState,
-        batch_start: std::time::Instant,
-        force: bool,
-    ) -> Result<()> {
-        const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
 
-        if let Some(sequence) = &state.last_successful_sequence {
-            if force
-                || batch_start.duration_since(state.last_checkpoint_time) >= CHECKPOINT_INTERVAL
-            {
-                match ctx.store.save_checkpoint(shard_id, sequence).await {
-                    Ok(_) => {
-                        debug!(
-                            shard_id = %shard_id,
-                            sequence = %sequence,
-                            forced = force,
-                            "Saved checkpoint"
-                        );
-                        state.last_checkpoint_time = batch_start;
-                        Ok(())
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            shard_id = %shard_id,
-                            sequence = %sequence,
-                            "Failed to save checkpoint"
-                        );
-                        Err(ProcessorError::CheckpointError(e.to_string()))
-                    }
-                }
-            } else {
-                Ok(())
-            }
-        } else {
-            Ok(())
-        }
-    }
 
     fn handle_early_shutdown(shard_id: &str) -> Result<()> {
         info!(
@@ -762,55 +660,13 @@ where
             }
     }
 
-    // We also need get_new_iterator for recovery scenarios
-    async fn get_new_iterator(
-        ctx: &ProcessingContext<P, C, S>,
-        shard_id: &str,
-        sequence_number: Option<&String>,
-        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<String> {
-        tokio::select! {
-                iterator_result = ctx.client.get_shard_iterator(
-                   &ctx.config.stream_name,
-        shard_id,
-        ShardIteratorType::AfterSequenceNumber,
-        sequence_number.map(String::as_str),
-        None,
-                ) => {
-                    match iterator_result {
-                        Ok(iterator) => {
-                            debug!(
-                                shard_id = %shard_id,
-                                sequence = ?sequence_number,
-                                "Successfully acquired new iterator"
-                            );
-                            Ok(iterator)
-                        }
-                        Err(e) => {
-                            error!(
-                                shard_id = %shard_id,
-                                error = %e,
-                                "Failed to get new iterator"
-                            );
-                            Err(ProcessorError::GetIteratorFailed(e.to_string()))
-                        }
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    info!(
-                        shard_id = %shard_id,
-                        "Shutdown received while getting new iterator"
-                    );
-                    Err(ProcessorError::Shutdown)
-                }
-            }
-    }
+
     async fn process_batch(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
         iterator: &str,
         state: &mut ShardProcessingState,
-        checkpoint: &Option<String>,
+
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<BatchResult> {
         let batch_start = std::time::Instant::now();
@@ -931,7 +787,7 @@ where
                     shard_id,
                     &iterator,
                     &mut state,
-                    &checkpoint,
+
                     &mut shutdown_rx,
                 ) => {
                     match batch_result {
@@ -988,20 +844,20 @@ where
 
 struct ShardProcessingState {
     failure_tracker: FailureTracker,
-    last_checkpoint_time: std::time::Instant,
+
     last_successful_sequence: Option<String>,
     pending_sequences: HashSet<String>,
-    iterator_expiry_count: u32,
+
 }
 
 impl ShardProcessingState {
     fn new() -> Self {
         Self {
             failure_tracker: FailureTracker::new(),
-            last_checkpoint_time: std::time::Instant::now(),
+
             last_successful_sequence: None,
             pending_sequences: HashSet::new(),
-            iterator_expiry_count: 0,
+
         }
     }
 
@@ -1020,6 +876,8 @@ impl ShardProcessingState {
     }
 }
 
+
+#[allow(dead_code)]
 enum BatchResult {
     Continue(String), // Contains next iterator
     EndOfShard,
@@ -1037,11 +895,10 @@ mod tests {
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
         TestUtils,
     };
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
+
     use std::sync::Once;
     use tokio::sync::Mutex;
-    use tokio::sync::Notify;
+
     
     use tracing_subscriber::EnvFilter;
 
@@ -1311,59 +1168,7 @@ mod tests {
         Ok(())
     }
 
-    /// Enhanced test context with event notification
-    #[derive(Clone)]
-    struct TestContext {
-        events: Arc<Mutex<Vec<ProcessingEvent>>>,
-        event_received: Arc<Notify>,
-        monitoring_complete: Arc<AtomicBool>,
-        normal_processing_done: Arc<AtomicBool>,
-        error_handling_done: Arc<AtomicBool>,
-        shutdown_done: Arc<AtomicBool>,
-    }
 
-    impl TestContext {
-        fn new() -> Self {
-            Self {
-                events: Arc::new(Mutex::new(Vec::new())),
-                event_received: Arc::new(Notify::new()),
-                monitoring_complete: Arc::new(AtomicBool::new(false)),
-                normal_processing_done: Arc::new(AtomicBool::new(false)),
-                error_handling_done: Arc::new(AtomicBool::new(false)),
-                shutdown_done: Arc::new(AtomicBool::new(false)),
-            }
-        }
-
-        async fn record_event(&self, event: ProcessingEvent) {
-            let mut events = self.events.lock().await;
-            events.push(event);
-        }
-
-        async fn verify_completion(&self) -> anyhow::Result<()> {
-            let events = self.events.lock().await;
-            if events.is_empty() {
-                return Err(anyhow::anyhow!("No events received during test"));
-            }
-
-            if !self.monitoring_complete.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("Monitoring did not complete gracefully"));
-            }
-
-            if !self.normal_processing_done.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("Normal processing did not complete"));
-            }
-
-            if !self.error_handling_done.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("Error handling did not complete"));
-            }
-
-            if !self.shutdown_done.load(Ordering::SeqCst) {
-                return Err(anyhow::anyhow!("Shutdown did not complete gracefully"));
-            }
-
-            Ok(())
-        }
-    }
 
     #[tokio::test]
     async fn test_processor_with_monitoring() -> anyhow::Result<()> {
@@ -1449,24 +1254,5 @@ mod tests {
 
         Ok(())
     }
-    async fn verify_monitoring_events(
-        events: &[ProcessingEvent],
-        expected_count: usize,
-    ) -> anyhow::Result<()> {
-        assert_eq!(
-            events.len(),
-            expected_count,
-            "Expected {} events, got {}",
-            expected_count,
-            events.len()
-        );
 
-        for event in events {
-            if let ProcessingEventType::RecordAttempt { success, .. } = &event.event_type {
-                assert!(*success, "Expected successful record processing");
-            }
-        }
-
-        Ok(())
-    }
 }

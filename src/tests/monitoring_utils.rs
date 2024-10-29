@@ -2,7 +2,7 @@
 
 use crate::{
     monitoring::{
-        MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
+        ProcessingEvent, ProcessingEventType,
     },
     test::{
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
@@ -10,11 +10,13 @@ use crate::{
     },
     KinesisProcessor, ProcessorConfig,
 };
+
 use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+#[cfg(test)]
 pub async fn setup_test_processor(
     config: ProcessorConfig,
 ) -> Result<(
@@ -95,21 +97,12 @@ pub async fn verify_event_types(
     Ok(())
 }
 
-/// Clean up test resources
-pub async fn cleanup_test_monitoring(
-    processor: KinesisProcessor<MockRecordProcessor, MockKinesisClient, MockCheckpointStore>,
-    mut monitoring_rx: mpsc::Receiver<ProcessingEvent>,
-) {
-    // Ensure monitoring channel is drained
-    while monitoring_rx.try_recv().is_ok() {}
-
-    // Clean up processor
-    drop(processor);
-}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::monitoring::ShardEventType;
+use crate::monitoring::MonitoringConfig;
+use super::*;
     use crate::monitoring::IteratorEventType;
     use tokio::sync::watch;
 
@@ -261,7 +254,7 @@ mod tests {
                 ProcessingEventType::RecordAttempt {
                     success,
                     is_final_attempt,
-                    error,
+
                     ..
                 },
                 "RecordAttempt",

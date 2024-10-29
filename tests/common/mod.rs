@@ -5,14 +5,12 @@ use go_zoom_kinesis::processor::InitialPosition;
 use go_zoom_kinesis::test::mocks::{MockKinesisClient, MockRecordProcessor};
 use go_zoom_kinesis::test::TestUtils;
 use go_zoom_kinesis::{
-    store::InMemoryCheckpointStore, CheckpointStore, ProcessorConfig, RecordProcessor,
+    store::InMemoryCheckpointStore, ProcessorConfig,
 };
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tokio::time::Instant;
 
 pub fn create_test_config() -> ProcessorConfig {
     ProcessorConfig {
@@ -36,50 +34,24 @@ pub fn create_test_config() -> ProcessorConfig {
     }
 }
 
-pub struct TestMetrics {
-    pub processed_count: Arc<AtomicU64>,
-    pub error_count: Arc<AtomicU64>,
-    pub processing_time: Arc<RwLock<HashMap<String, Duration>>>,
-}
 
-impl TestMetrics {
-    pub fn new() -> Self {
-        Self {
-            processed_count: Arc::new(AtomicU64::new(0)),
-            error_count: Arc::new(AtomicU64::new(0)),
-            processing_time: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
 
-    pub fn record_processed(&self) {
-        self.processed_count.fetch_add(1, Ordering::SeqCst);
-    }
 
-    pub fn record_error(&self) {
-        self.error_count.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub async fn record_processing_time(&self, shard_id: &str, duration: Duration) {
-        self.processing_time
-            .write()
-            .await
-            .insert(shard_id.to_string(), duration);
-    }
-}
-
+#[cfg(test)]
 pub struct TestContext {
     pub config: ProcessorConfig,
     pub client: MockKinesisClient,
     pub processor: MockRecordProcessor,
     pub store: InMemoryCheckpointStore,
-    pub metrics: TestMetrics,
+
     pub event_log: Arc<TestEventLog>, // New field
 }
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct TestEvent {
     pub timestamp: std::time::Instant,
     pub event_type: TestEventType,
-    pub shard_id: Option<String>,
+
     pub error: Option<String>,
 }
 
@@ -87,12 +59,6 @@ pub struct TestEvent {
 pub enum TestEventType {
     ProcessorStarted,
     ShardListAttempt,
-    ShardListError,
-    ShardProcessingStarted,
-    ShardProcessingError,
-    ErrorSent,
-    ErrorReceived,
-    ShutdownRequested,
     ShutdownCompleted,
 }
 
@@ -116,7 +82,7 @@ impl TestEventLog {
         let event = TestEvent {
             timestamp: std::time::Instant::now(),
             event_type,
-            shard_id,
+
             error,
         };
         self.events.write().await.push(event);
@@ -134,7 +100,7 @@ impl TestContext {
             client: MockKinesisClient::new(),
             processor: MockRecordProcessor::new(),
             store: InMemoryCheckpointStore::new(),
-            metrics: TestMetrics::new(),
+
             event_log: Arc::new(TestEventLog::new()),
         }
     }

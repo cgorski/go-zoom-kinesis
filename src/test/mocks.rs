@@ -205,60 +205,11 @@ impl MockRecordProcessor {
             .insert(sequence.to_string(), duration);
     }
 
-    async fn check_timeout(&self, start: Instant, sequence: &str) -> Result<(), ProcessingError> {
-        if let Some(config) = &*self.config.read().await {
-            let elapsed = start.elapsed();
-            if elapsed > config.processing_timeout {
-                // Record the timeout
-                self.processing_times
-                    .write()
-                    .await
-                    .insert(sequence.to_string(), elapsed);
-                *self.error_count.write().await += 1;
 
-                return Err(ProcessingError::SoftFailure(anyhow::anyhow!(
-                    "Processing timeout after {:?} (limit: {:?})",
-                    elapsed,
-                    config.processing_timeout
-                )));
-            }
-        }
-        Ok(())
-    }
 
-    async fn record_processing_time(&self, sequence: &str, duration: Duration) {
-        self.processing_times
-            .write()
-            .await
-            .insert(sequence.to_string(), duration);
-    }
 
-    async fn record_error(&self, sequence: &str, message: &str) {
-        *self.error_count.write().await += 1;
-        if let Some(tx) = self.error_tx.lock().await.as_ref() {
-            let _ = tx
-                .send(format!(
-                    "Error processing sequence {}: {}",
-                    sequence, message
-                ))
-                .await;
-        }
-    }
 
-    async fn record_success(&self, sequence: &str, record: &Record, duration: Duration) {
-        self.processed_records.write().await.push(record.clone());
-        *self.process_count.write().await += 1;
-        self.processing_times
-            .write()
-            .await
-            .insert(sequence.to_string(), duration);
 
-        if let Some(tx) = self.error_tx.lock().await.as_ref() {
-            let _ = tx
-                .send(format!("Successfully processed sequence {}", sequence))
-                .await;
-        }
-    }
 
     pub async fn get_processing_time(&self, sequence: &str) -> Option<Duration> {
         self.processing_times.read().await.get(sequence).copied()
@@ -435,11 +386,7 @@ impl MockRecordProcessor {
     }
 }
 
-#[derive(Debug, Clone)]
-struct FailureConfig {
-    max_attempts: u32,
-    failure_type: String,
-}
+
 
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {

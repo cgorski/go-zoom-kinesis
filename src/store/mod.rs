@@ -1,5 +1,7 @@
 //! Checkpoint storage implementations for the Kinesis processor
 
+use tokio::time::Duration;
+use std::collections::HashMap;
 use async_trait::async_trait;
 
 #[cfg(feature = "dynamodb-store")]
@@ -43,19 +45,7 @@ pub(crate) mod test_utils {
     
     
 
-    /// Test helper to create a simple in-memory checkpoint store
-    pub async fn create_test_store() -> InMemoryCheckpointStore {
-        InMemoryCheckpointStore::new()
-    }
 
-    /// Test helper to verify checkpoint data
-    pub async fn verify_checkpoint(
-        store: &impl CheckpointStore,
-        shard_id: &str,
-        expected: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let checkpoint = store.get_checkpoint(shard_id).await?;
-        assert_eq!(checkpoint.as_deref(), expected);
-        Ok(())
-    }
+
+
 }

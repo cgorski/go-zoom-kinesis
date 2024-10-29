@@ -133,6 +133,7 @@ pub struct FixedBackoff {
 }
 
 impl FixedBackoff {
+    #[cfg(test)]
     pub fn new(delay: Duration) -> Self {
         Self { delay }
     }
