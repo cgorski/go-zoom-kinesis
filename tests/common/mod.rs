@@ -4,9 +4,7 @@ use go_zoom_kinesis::monitoring::MonitoringConfig;
 use go_zoom_kinesis::processor::InitialPosition;
 use go_zoom_kinesis::test::mocks::{MockKinesisClient, MockRecordProcessor};
 use go_zoom_kinesis::test::TestUtils;
-use go_zoom_kinesis::{
-    store::InMemoryCheckpointStore, ProcessorConfig,
-};
+use go_zoom_kinesis::{store::InMemoryCheckpointStore, ProcessorConfig};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,9 +31,6 @@ pub fn create_test_config() -> ProcessorConfig {
         prefer_stored_checkpoint: true,
     }
 }
-
-
-
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -78,12 +73,7 @@ impl TestEventLog {
     }
 
     #[allow(dead_code)]
-    pub async fn log(
-        &self,
-        event_type: TestEventType,
-
-        error: Option<String>,
-    ) {
+    pub async fn log(&self, event_type: TestEventType, error: Option<String>) {
         let event = TestEvent {
             timestamp: std::time::Instant::now(),
             event_type,
@@ -92,7 +82,7 @@ impl TestEventLog {
         };
         self.events.write().await.push(event);
     }
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub async fn get_events(&self) -> Vec<TestEvent> {
         self.events.read().await.clone()
     }
@@ -109,8 +99,6 @@ impl TestContext {
             event_log: Arc::new(TestEventLog::new()),
         }
     }
-
-  
 }
 
 // Add test utilities for verifying shard processing

@@ -2,9 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::{
-    monitoring::{
-        ProcessingEvent, ProcessingEventType,
-    },
+    monitoring::{ProcessingEvent, ProcessingEventType},
     test::{
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
         TestUtils,
@@ -60,9 +58,11 @@ pub async fn collect_events_with_timing(
     let end_time = Instant::now() + duration;
 
     while Instant::now() < end_time {
+        #[allow(clippy::collapsible_match)]
         if let Ok(event) =
             tokio::time::timeout(Duration::from_millis(100), monitoring_rx.recv()).await
         {
+            #[allow(clippy::collapsible_match)]
             if let Some(event) = event {
                 debug!("Received event: {:?}", event);
                 events.push(event);
@@ -101,13 +101,12 @@ pub async fn verify_event_types(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::monitoring::ShardEventType;
-use crate::monitoring::MonitoringConfig;
-use super::*;
+    use super::*;
     use crate::monitoring::IteratorEventType;
+    use crate::monitoring::MonitoringConfig;
+    use crate::monitoring::ShardEventType;
     use tokio::sync::watch;
 
     #[tokio::test]
@@ -195,8 +194,7 @@ use super::*;
             .set_failure_sequences(vec!["seq-2".to_string(), "seq-3".to_string()])
             .await;
 
-        let (processor, monitoring_rx) =
-            KinesisProcessor::new(config, processor, client, store);
+        let (processor, monitoring_rx) = KinesisProcessor::new(config, processor, client, store);
 
         let mut monitoring_rx =
             monitoring_rx.ok_or_else(|| anyhow!("Monitoring receiver not created"))?;
@@ -258,7 +256,6 @@ use super::*;
                 ProcessingEventType::RecordAttempt {
                     success,
                     is_final_attempt,
-
                     ..
                 },
                 "RecordAttempt",
@@ -287,5 +284,4 @@ use super::*;
             _ => false,
         }
     }
-
 }

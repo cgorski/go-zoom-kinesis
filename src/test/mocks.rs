@@ -23,6 +23,7 @@ use tracing::debug;
 pub struct MockKinesisClient {
     list_shards_responses: Arc<Mutex<VecDeque<Result<Vec<Shard>>>>>,
     get_iterator_responses: Arc<Mutex<VecDeque<Result<String>>>>,
+    #[allow(clippy::type_complexity)]
     get_records_responses: Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>)>>>>,
     iterator_request_count: Arc<AtomicUsize>,
 }
@@ -205,12 +206,6 @@ impl MockRecordProcessor {
             .insert(sequence.to_string(), duration);
     }
 
-
-
-
-
-
-
     pub async fn get_processing_time(&self, sequence: &str) -> Option<Duration> {
         self.processing_times.read().await.get(sequence).copied()
     }
@@ -385,8 +380,6 @@ impl MockRecordProcessor {
         }
     }
 }
-
-
 
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {

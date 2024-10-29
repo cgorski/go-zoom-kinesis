@@ -5,7 +5,6 @@ pub mod mocks;
 #[cfg(test)]
 use std::sync::Arc;
 
-
 use aws_sdk_kinesis::types::{Record, Shard};
 use std::time::Duration;
 
@@ -76,7 +75,6 @@ pub struct TestSetup {
 
 #[cfg(test)]
 impl TestSetup {
-
     pub async fn new() -> Self {
         Self {
             config: TestConfig::default(),

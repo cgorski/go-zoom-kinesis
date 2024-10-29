@@ -1,8 +1,8 @@
 //! Checkpoint storage implementations for the Kinesis processor
 
-use tokio::time::Duration;
-use std::collections::HashMap;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use tokio::time::Duration;
 
 #[cfg(feature = "dynamodb-store")]
 pub mod dynamodb;
@@ -26,9 +26,13 @@ pub trait CheckpointStoreTestExt: CheckpointStore {
     }
 
     /// Get all checkpoints for testing verification
-     fn get_all_checkpoints(&self) -> impl std::future::Future<Output = anyhow::Result<HashMap<String, String>>> + Send {async {
-        Ok(HashMap::new()) // Default implementation returns empty map
-    } }
+    fn get_all_checkpoints(
+        &self,
+    ) -> impl std::future::Future<Output = anyhow::Result<HashMap<String, String>>> + Send {
+        async {
+            Ok(HashMap::new()) // Default implementation returns empty map
+        }
+    }
 }
 
 #[cfg(feature = "test-utils")]
@@ -38,4 +42,3 @@ impl<T: CheckpointStore> CheckpointStoreTestExt for T {}
 #[cfg(feature = "dynamodb-store")]
 pub use dynamodb::DynamoDbCheckpointStore;
 pub use memory::InMemoryCheckpointStore;
-

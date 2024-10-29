@@ -33,17 +33,30 @@ pub trait KinesisClientTrait: Send + Sync {
 
 #[cfg(feature = "test-utils")]
 pub trait KinesisClientTestExt: KinesisClientTrait {
+    fn mock_list_shards(
+        &self,
+        _response: Result<Vec<Shard>>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
 
-    fn mock_list_shards(&self, _response: Result<Vec<Shard>>)-> impl std::future::Future<Output = ()> + Send { async {} }
+    fn mock_get_iterator(
+        &self,
+        _response: Result<String>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
 
+    fn mock_get_records(
+        &self,
+        _response: Result<(Vec<Record>, Option<String>)>,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
 
-     fn mock_get_iterator(&self, _response: Result<String>) -> impl std::future::Future<Output = ()> + Send { async {} }
-
-
-     fn mock_get_records(&self, _response: Result<(Vec<Record>, Option<String>)>)-> impl std::future::Future<Output = ()> + Send { async {} }
-
-
-     fn get_iterator_request_count(&self) -> impl std::future::Future<Output = usize> + Send {async {0}}
+    fn get_iterator_request_count(&self) -> impl std::future::Future<Output = usize> + Send {
+        async { 0 }
+    }
 }
 
 #[cfg(feature = "test-utils")]

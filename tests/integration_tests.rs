@@ -3,9 +3,7 @@ use crate::common::TestEventType;
 use anyhow::Result;
 use aws_sdk_kinesis::types::Record;
 use go_zoom_kinesis::monitoring::{MonitoringConfig, ProcessingEventType};
-use go_zoom_kinesis::{
-    store::InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig,
-};
+use go_zoom_kinesis::{store::InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig};
 use go_zoom_kinesis::{CheckpointStore, ProcessorError};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -446,9 +444,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
     ctx.client
         .mock_list_shards(Err(anyhow::anyhow!("Temporary failure")))
         .await;
-    event_log
-        .log(TestEventType::ShardListAttempt, None)
-        .await;
+    event_log.log(TestEventType::ShardListAttempt, None).await;
     tracing::debug!("Configured initial failure for list_shards");
 
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -463,9 +459,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
         let event_log = event_log.clone();
         let error_tx = error_tx.clone();
         async move {
-            event_log
-                .log(TestEventType::ProcessorStarted, None)
-                .await;
+            event_log.log(TestEventType::ProcessorStarted, None).await;
 
             let (processor_instance, _monitoring_rx) = KinesisProcessor::new(
                 // Fixed: Destructure the tuple
@@ -856,7 +850,7 @@ async fn test_parallel_processing_stress() -> anyhow::Result<()> {
     let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
 
     let start_time = std::time::Instant::now();
-     tokio::spawn(async move { processor_instance.run(shutdown_rx).await });
+    tokio::spawn(async move { processor_instance.run(shutdown_rx).await });
 
     // Wait for processing to complete or timeout
     let result = tokio::select! {
@@ -879,7 +873,6 @@ async fn test_parallel_processing_stress() -> anyhow::Result<()> {
     // Shutdown
     info!("Sending shutdown signal");
     shutdown_tx.send(true)?;
-
 
     // Gather results
     let elapsed = start_time.elapsed();

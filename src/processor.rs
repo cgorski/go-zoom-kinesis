@@ -148,8 +148,6 @@ where
     fn is_iterator_expired(&self, error: &anyhow::Error) -> bool {
         error.to_string().contains("Iterator expired")
     }
-
-
 }
 
 pub struct KinesisProcessor<P, C, S>
@@ -576,7 +574,6 @@ where
         Ok(result)
     }
 
-
     fn handle_early_shutdown(shard_id: &str) -> Result<()> {
         info!(
             shard_id = %shard_id,
@@ -659,7 +656,6 @@ where
                 }
             }
     }
-
 
     async fn process_batch(
         ctx: &ProcessingContext<P, C, S>,
@@ -847,7 +843,6 @@ struct ShardProcessingState {
 
     last_successful_sequence: Option<String>,
     pending_sequences: HashSet<String>,
-
 }
 
 impl ShardProcessingState {
@@ -857,7 +852,6 @@ impl ShardProcessingState {
 
             last_successful_sequence: None,
             pending_sequences: HashSet::new(),
-
         }
     }
 
@@ -875,7 +869,6 @@ impl ShardProcessingState {
         self.last_successful_sequence = Some(sequence);
     }
 }
-
 
 #[allow(dead_code)]
 enum BatchResult {
@@ -899,7 +892,6 @@ mod tests {
     use std::sync::Once;
     use tokio::sync::Mutex;
 
-    
     use tracing_subscriber::EnvFilter;
 
     // Add this static for one-time initialization
@@ -1168,8 +1160,6 @@ mod tests {
         Ok(())
     }
 
-
-
     #[tokio::test]
     async fn test_processor_with_monitoring() -> anyhow::Result<()> {
         init_logging();
@@ -1254,5 +1244,4 @@ mod tests {
 
         Ok(())
     }
-
 }
