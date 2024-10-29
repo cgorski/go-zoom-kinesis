@@ -1,12 +1,13 @@
 // tests/monitoring_utils.rs
 
+#[cfg(test)]
+use crate::test::{
+    mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
+    TestUtils,
+};
 #[allow(unused_imports)]
 use crate::{
     monitoring::{ProcessingEvent, ProcessingEventType},
-    test::{
-        mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
-        TestUtils,
-    },
     KinesisProcessor, ProcessorConfig,
 };
 #[allow(unused_imports)]
