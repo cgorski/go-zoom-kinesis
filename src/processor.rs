@@ -64,7 +64,7 @@ use tracing::{error, info, trace, warn};
 /// }
 /// ```
 #[async_trait]
-pub trait RecordProcessor: Send + Sync + Clone {
+pub trait RecordProcessor: Send + Sync  {
     /// Process a single record from the Kinesis stream
     ///
     /// # Arguments
@@ -173,7 +173,7 @@ impl Default for ProcessorConfig {
 }
 
 /// Internal context holding processor state and dependencies
-#[derive(Clone)]
+
 pub struct ProcessingContext<P, C, S>
 where
     P: RecordProcessor + Send + Sync + 'static,
@@ -192,9 +192,21 @@ where
     monitoring_tx: Option<mpsc::Sender<ProcessingEvent>>,
 }
 
+impl<P: RecordProcessor, C: KinesisClientTrait + std::clone::Clone, S : CheckpointStore + std::clone::Clone> Clone for ProcessingContext<P, C, S> {
+    fn clone(&self) -> Self {
+        Self {
+            processor: self.processor.clone(),
+            client: self.client.clone(),
+            store: self.store.clone(),
+            config: self.config.clone(),
+            monitoring_tx: self.monitoring_tx.clone(),
+        }
+    }
+}
+
 impl<P, C, S> ProcessingContext<P, C, S>
 where
-    P: RecordProcessor + Send + Sync + Clone + 'static,
+    P: RecordProcessor + Send + Sync  + 'static,
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
@@ -277,16 +289,17 @@ where
 
 pub struct KinesisProcessor<P, C, S>
 where
-    P: RecordProcessor + Send + Sync + Clone + 'static,
+    P: RecordProcessor + Send + Sync  + 'static,
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
     context: ProcessingContext<P, C, S>,
 }
 
+
 impl<P, C, S> KinesisProcessor<P, C, S>
 where
-    P: RecordProcessor + Send + Sync + Clone + 'static,
+    P: RecordProcessor + Send + Sync  + 'static,
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
@@ -1458,5 +1471,5 @@ mod tests {
         Ok(())
     }
 
-   
+
 }
