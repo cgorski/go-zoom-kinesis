@@ -1,8 +1,8 @@
 [package]
 name = "go-zoom-kinesis"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Chris A. Gorski <cgorski@cgorski.org>"]
 description = "A robust AWS Kinesis stream processor with checkpointing and retry capabilities"
 license = "MIT"
 repository = "https://github.com/yourusername/go-zoom-kinesis"
