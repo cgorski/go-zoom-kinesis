@@ -1,11 +1,9 @@
 # go-zoom-kinesis 🐊[
 
 [![CI](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml)
-[![Security audit](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/security_audit.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/security_audit.yml)
 [![codecov](https://codecov.io/gh/cgorski/go-zoom-kinesis/branch/main/graph/badge.svg)](https://codecov.io/gh/cgorski/go-zoom-kinesis)
-[![Docs](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/docs.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/docs.yml)
 [![Crates.io](https://img.shields.io/crates/v/go-zoom-kinesis.svg)](https://crates.io/crates/go-zoom-kinesis)
-![Documentation](https://docs.rs/go-zoom-kinesis/badge.svg)](https://docs.rs/go-zoom-kinesis)
+![Documentation](https://docs.rs/go-zoom-kinesis/badge.svg)]
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A robust, production-ready AWS Kinesis stream processor with checkpointing and retry capabilities. Built with reliability and performance in mind.
@@ -22,15 +20,6 @@ A robust, production-ready AWS Kinesis stream processor with checkpointing and r
 - 🢪 Production-ready with extensive test coverage
 - 🎧 Configurable stream position initialization
 - 🔄 Smart checkpoint recovery with fallback options
-
-## Quick Start 
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-go-zoom-kinesis = "0.1.0"
-```
 
 ### Basic Usage 📓
 

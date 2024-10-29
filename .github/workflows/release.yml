@@ -57,6 +57,28 @@ jobs:
             fi
           fi
 
+      - name: Verify documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          echo "Checking documentation..."
+          cargo doc --no-deps --all-features --document-private-items
+          
+          echo "Verifying README examples..."
+          # Extract Rust code blocks from README.md
+          awk '/^```rust/{p=1;next}/^```/{p=0;next}p' README.md > readme_examples.rs
+          # Add test harness if file is not empty
+          if [ -s readme_examples.rs ]; then
+            rustc --test readme_examples.rs && ./readme_examples
+          else
+            echo "No Rust examples found in README.md"
+          fi
+
+      - name: Check documentation links
+        run: |
+          cargo install cargo-deadlinks
+          cargo deadlinks
+
   test:
     name: Test Release
     needs: verify
@@ -102,39 +124,10 @@ jobs:
           toolchain: stable
           override: true
 
-      #      - name: Generate Changelog
-      #        id: changelog
-      #        uses: mikepenz/release-changelog-builder-action@v3
-      #        with:
-      #          configuration: |
-      #            {
-      #              "categories": [
-      #                {
-      #                  "title": "## 🚀 Features",
-      #                  "labels": ["feature", "enhancement"]
-      #                },
-      #                {
-      #                  "title": "## 🐛 Fixes",
-      #                  "labels": ["fix", "bug"]
-      #                },
-      #                {
-      #                  "title": "## 💬 Other",
-      #                  "labels": ["other"]
-      #                },
-      #                {
-      #                  "title": "## 📦 Dependencies",
-      #                  "labels": ["dependencies"]
-      #                }
-      #              ]
-      #            }
-      #        env:
-      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           name: Release ${{ github.ref_name }}
-          #          body: ${{ steps.changelog.outputs.changelog }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
         env:
