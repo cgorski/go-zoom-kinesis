@@ -54,7 +54,7 @@ impl<B: Backoff> RetryHandle<B> {
     pub async fn retry<F, Fut, T, E>(
         &mut self,
         mut operation: F,
-        mut shutdown: &mut tokio::sync::watch::Receiver<bool>,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<T, RetryError>
     where
         F: FnMut() -> Fut,
@@ -125,9 +125,9 @@ impl<B: Backoff> RetryHandle<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test::TestUtils;
-    use crate::KinesisProcessor;
-    use crate::ProcessorError;
+    
+    
+    
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 

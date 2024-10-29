@@ -1,6 +1,6 @@
 use crate::{
     client::KinesisClientTrait, error::ProcessingError, processor::RecordProcessor, retry::Backoff,
-    store::CheckpointStore, ProcessorConfig, ProcessorError,
+    store::CheckpointStore, ProcessorConfig,
 };
 use async_trait::async_trait;
 use aws_sdk_kinesis::types::{Record, Shard, ShardIteratorType};
@@ -16,7 +16,7 @@ use parking_lot;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
-use tracing::{debug, trace};
+use tracing::debug;
 
 /// Mock Kinesis client for testing
 #[derive(Debug, Default, Clone)]
@@ -96,7 +96,7 @@ impl KinesisClientTrait for MockKinesisClient {
         let mut current_retry = retry_count;
         loop {
             if *shutdown.borrow() {
-                return Err(anyhow::anyhow!("Shutdown requested").into());
+                return Err(anyhow::anyhow!("Shutdown requested"));
             }
 
             match self.get_records_responses.lock().await.pop_front() {

@@ -12,4 +12,3 @@ pub use types::{
 };
 
 // Re-export internal types needed by the processor
-pub(crate) use metrics::MetricsAggregator as InternalMetricsAggregator;

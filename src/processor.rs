@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use aws_sdk_kinesis::types::{Record, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::select;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
@@ -1043,7 +1042,7 @@ mod tests {
     use std::sync::Once;
     use tokio::sync::Mutex;
     use tokio::sync::Notify;
-    use tokio::time::Instant;
+    
     use tracing_subscriber::EnvFilter;
 
     // Add this static for one-time initialization
@@ -1463,11 +1462,8 @@ mod tests {
         );
 
         for event in events {
-            match &event.event_type {
-                ProcessingEventType::RecordAttempt { success, .. } => {
-                    assert!(*success, "Expected successful record processing");
-                }
-                _ => {}
+            if let ProcessingEventType::RecordAttempt { success, .. } = &event.event_type {
+                assert!(*success, "Expected successful record processing");
             }
         }
 

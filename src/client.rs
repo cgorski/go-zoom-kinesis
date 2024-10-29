@@ -1,11 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFluentBuilder;
 use aws_sdk_kinesis::{
     types::{Record, Shard, ShardIteratorType},
     Client,
 };
-use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::time::{Duration, SystemTime};
 use tracing::warn;
@@ -95,7 +93,7 @@ impl KinesisClientTrait for Client {
         let mut current_retry = retry_count;
         loop {
             if *shutdown.borrow() {
-                return Err(anyhow::anyhow!("Shutdown requested").into());
+                return Err(anyhow::anyhow!("Shutdown requested"));
             }
 
             match self

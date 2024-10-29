@@ -2,7 +2,7 @@
 
 use crate::{
     monitoring::{
-        MetricsAggregator, MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
+        MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
     },
     test::{
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
@@ -11,7 +11,7 @@ use crate::{
     KinesisProcessor, ProcessorConfig,
 };
 use anyhow::{anyhow, Result};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -198,7 +198,7 @@ mod tests {
             .set_failure_sequences(vec!["seq-2".to_string(), "seq-3".to_string()])
             .await;
 
-        let (processor, mut monitoring_rx) =
+        let (processor, monitoring_rx) =
             KinesisProcessor::new(config, processor, client, store);
 
         let mut monitoring_rx =
