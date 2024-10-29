@@ -1,0 +1,61 @@
+# .github/workflows/release.yml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  discussions: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      # Verify the tag matches the Cargo.toml version
+      - name: Verify versions match
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | cut -d '"' -f 2)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch: Cargo.toml ($CARGO_VERSION) != Tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      # Verify the package builds
+      - name: Build
+        run: cargo build --release --all-features
+
+      # Run tests
+      - name: Test
+        run: cargo test --release --all-features
+
+      # Verify the package contents are correct
+      - name: Verify package
+        run: cargo package --no-verify
+
+      # Publish to crates.io
+      - name: Publish to crates.io
+        run: cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUSH }}
+
+      # Create GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GO_ZOOM_KINESIS }}
