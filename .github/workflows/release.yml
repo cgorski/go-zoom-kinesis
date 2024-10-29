@@ -35,10 +35,11 @@ jobs:
 
       - name: Verify versions match
         run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          # Specifically look for version in [package] section
+          CARGO_VERSION=$(awk '/^\[package\]/{p=1;next}/^\[.*\]/{p=0}p&&/^version = /{gsub("\"","");print $3}' Cargo.toml)
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Cargo.toml version: $CARGO_VERSION"
-          echo "Tag version: $TAG_VERSION"
+          echo "Cargo.toml version: '$CARGO_VERSION'"
+          echo "Tag version: '$TAG_VERSION'"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "Version mismatch: Cargo.toml ($CARGO_VERSION) != Tag ($TAG_VERSION)"
             exit 1
