@@ -43,8 +43,16 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: |
+          # Build and test docs
           cargo doc --no-deps --all-features --document-private-items
           cargo test --doc --all-features
+          
+          # Move contents up one directory level
+          mv target/doc/go_zoom_kinesis/* target/doc/
+          rmdir target/doc/go_zoom_kinesis
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
       - name: Upload documentation
         if: github.ref == 'refs/heads/main'

@@ -3,7 +3,7 @@
 [![CI](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/cgorski/go-zoom-kinesis/branch/main/graph/badge.svg)](https://codecov.io/gh/cgorski/go-zoom-kinesis)
 [![Crates.io](https://img.shields.io/crates/v/go-zoom-kinesis.svg)](https://crates.io/crates/go-zoom-kinesis)
-[![Documentation](https://docs.rs/go-zoom-kinesis/badge.svg)](https://docs.rs/go-zoom-kinesis)
+[![Documentation](https://img.shields.io/badge/docs-github.io-blue)](https://cgorski.github.io/go-zoom-kinesis/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A robust, production-ready AWS Kinesis stream processor with checkpointing and retry capabilities. Built with reliability and performance in mind.
