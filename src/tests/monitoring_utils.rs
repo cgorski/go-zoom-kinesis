@@ -1,5 +1,6 @@
 // tests/monitoring_utils.rs
 
+#[allow(unused_imports)]
 use crate::{
     monitoring::{
         ProcessingEvent, ProcessingEventType,
@@ -10,7 +11,7 @@ use crate::{
     },
     KinesisProcessor, ProcessorConfig,
 };
-
+#[allow(unused_imports)]
 use anyhow::{anyhow, Result};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -50,6 +51,7 @@ pub async fn setup_test_processor(
     Ok((processor, monitoring_rx))
 }
 /// Collect events from the monitoring channel for a specified duration
+#[allow(dead_code)]
 pub async fn collect_events_with_timing(
     monitoring_rx: &mut mpsc::Receiver<ProcessingEvent>,
     duration: Duration,
@@ -73,6 +75,7 @@ pub async fn collect_events_with_timing(
 }
 
 /// Helper to dump events for debugging
+#[allow(dead_code)]
 fn dump_events(events: &[ProcessingEvent]) {
     info!("=== Begin Event Dump ===");
     for (i, event) in events.iter().enumerate() {
@@ -81,6 +84,7 @@ fn dump_events(events: &[ProcessingEvent]) {
     info!("=== End Event Dump ===");
 }
 /// Verify that specific event types are received
+#[allow(dead_code)]
 pub async fn verify_event_types(
     monitoring_rx: &mut mpsc::Receiver<ProcessingEvent>,
     expected_types: Vec<ProcessingEventType>,
@@ -283,49 +287,5 @@ use super::*;
             _ => false,
         }
     }
-    // Helper function to verify record event contents
-    fn verify_record_event_contents(
-        events: &[ProcessingEvent],
-        sequence: &str,
-        expect_success: bool,
-    ) -> Result<()> {
-        let record_events: Vec<_> = events
-            .iter()
-            .filter(|e| {
-                matches!(
-                    &e.event_type,
-                    ProcessingEventType::RecordAttempt { sequence_number, .. }
-                    if sequence_number == sequence
-                )
-            })
-            .collect();
 
-        assert!(
-            !record_events.is_empty(),
-            "No events found for sequence {}",
-            sequence
-        );
-
-        if expect_success {
-            assert!(
-                record_events.iter().any(|e| matches!(
-                    &e.event_type,
-                    ProcessingEventType::RecordAttempt { success: true, .. }
-                )),
-                "Expected successful processing for sequence {}",
-                sequence
-            );
-        } else {
-            assert!(
-                record_events.iter().any(|e| matches!(
-                    &e.event_type,
-                    ProcessingEventType::RecordAttempt { success: false, .. }
-                )),
-                "Expected failed processing for sequence {}",
-                sequence
-            );
-        }
-
-        Ok(())
-    }
 }

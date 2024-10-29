@@ -26,9 +26,9 @@ pub trait CheckpointStoreTestExt: CheckpointStore {
     }
 
     /// Get all checkpoints for testing verification
-    async fn get_all_checkpoints(&self) -> anyhow::Result<HashMap<String, String>> {
+     fn get_all_checkpoints(&self) -> impl std::future::Future<Output = anyhow::Result<HashMap<String, String>>> + Send {async {
         Ok(HashMap::new()) // Default implementation returns empty map
-    }
+    } }
 }
 
 #[cfg(feature = "test-utils")]
@@ -39,13 +39,3 @@ impl<T: CheckpointStore> CheckpointStoreTestExt for T {}
 pub use dynamodb::DynamoDbCheckpointStore;
 pub use memory::InMemoryCheckpointStore;
 
-#[cfg(test)]
-pub(crate) mod test_utils {
-    use super::*;
-    
-    
-
-
-
-
-}

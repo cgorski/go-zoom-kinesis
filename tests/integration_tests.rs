@@ -447,7 +447,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
         .mock_list_shards(Err(anyhow::anyhow!("Temporary failure")))
         .await;
     event_log
-        .log(TestEventType::ShardListAttempt, None, None)
+        .log(TestEventType::ShardListAttempt, None)
         .await;
     tracing::debug!("Configured initial failure for list_shards");
 
@@ -464,7 +464,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
         let error_tx = error_tx.clone();
         async move {
             event_log
-                .log(TestEventType::ProcessorStarted, None, None)
+                .log(TestEventType::ProcessorStarted, None)
                 .await;
 
             let (processor_instance, _monitoring_rx) = KinesisProcessor::new(

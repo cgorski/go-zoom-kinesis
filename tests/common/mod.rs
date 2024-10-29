@@ -38,6 +38,7 @@ pub fn create_test_config() -> ProcessorConfig {
 
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub struct TestContext {
     pub config: ProcessorConfig,
     pub client: MockKinesisClient,
@@ -46,7 +47,7 @@ pub struct TestContext {
 
     pub event_log: Arc<TestEventLog>, // New field
 }
-#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TestEvent {
     pub timestamp: std::time::Instant,
@@ -55,6 +56,7 @@ pub struct TestEvent {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum TestEventType {
     ProcessorStarted,
@@ -62,6 +64,8 @@ pub enum TestEventType {
     ShutdownCompleted,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub struct TestEventLog {
     events: Arc<RwLock<Vec<TestEvent>>>,
 }
@@ -73,10 +77,11 @@ impl TestEventLog {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn log(
         &self,
         event_type: TestEventType,
-        shard_id: Option<String>,
+
         error: Option<String>,
     ) {
         let event = TestEvent {
@@ -87,7 +92,7 @@ impl TestEventLog {
         };
         self.events.write().await.push(event);
     }
-
+#[allow(dead_code)]
     pub async fn get_events(&self) -> Vec<TestEvent> {
         self.events.read().await.clone()
     }
@@ -105,25 +110,13 @@ impl TestContext {
         }
     }
 
-    pub async fn setup_basic_mocks(&self) -> Result<()> {
-        self.client
-            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
-            .await;
-        self.client
-            .mock_get_iterator(Ok("test-iterator".to_string()))
-            .await;
-        self.client
-            .mock_get_records(Ok((
-                TestUtils::create_test_records(1),
-                Some("next-iterator".to_string()),
-            )))
-            .await;
-        Ok(())
-    }
+  
 }
 
 // Add test utilities for verifying shard processing
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn verify_processing_complete(
     processor: &MockRecordProcessor, // Change to specific type instead of impl RecordProcessor
     expected_records: usize,
