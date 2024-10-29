@@ -1,4 +1,4 @@
-# go-zoom-kinesis 🐊[
+# go-zoom-kinesis 🐊
 
 [![CI](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/cgorski/go-zoom-kinesis/branch/main/graph/badge.svg)](https://codecov.io/gh/cgorski/go-zoom-kinesis)
