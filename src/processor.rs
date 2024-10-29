@@ -1,6 +1,6 @@
 //! Core processor implementation for handling Kinesis streams
 //!
-//! This module provides the main processing logic for consuming records from 
+//! This module provides the main processing logic for consuming records from
 //! Kinesis streams. It handles:
 //!
 //! - Shard discovery and management
@@ -358,7 +358,7 @@ where
                     sequence.to_string(),
                     e.to_string(),
                 ))
-                    .await;
+                .await;
 
                 Ok(false)
             }
@@ -755,7 +755,7 @@ where
             result.failed_records.len(),
             batch_start.elapsed(),
         ))
-            .await;
+        .await;
 
         Ok(result)
     }
@@ -824,39 +824,39 @@ where
         };
 
         tokio::select! {
-                iterator_result = ctx.client.get_shard_iterator(
-                     &ctx.config.stream_name,
-                    shard_id,
-                    iterator_type,
-                    checkpoint.as_deref(),
-                    None,
-                ) => {
-                    match iterator_result {
-                        Ok(iterator) => {
-                            debug!(
-                                shard_id = %shard_id,
-                                "Successfully acquired initial iterator"
-                            );
-                            Ok(iterator)
-                        }
-                        Err(e) => {
-                            error!(
-                                shard_id = %shard_id,
-                                error = %e,
-                                "Failed to get initial iterator"
-                            );
-                            Err(ProcessorError::GetIteratorFailed(e.to_string()))
-                        }
+            iterator_result = ctx.client.get_shard_iterator(
+                 &ctx.config.stream_name,
+                shard_id,
+                iterator_type,
+                checkpoint.as_deref(),
+                None,
+            ) => {
+                match iterator_result {
+                    Ok(iterator) => {
+                        debug!(
+                            shard_id = %shard_id,
+                            "Successfully acquired initial iterator"
+                        );
+                        Ok(iterator)
+                    }
+                    Err(e) => {
+                        error!(
+                            shard_id = %shard_id,
+                            error = %e,
+                            "Failed to get initial iterator"
+                        );
+                        Err(ProcessorError::GetIteratorFailed(e.to_string()))
                     }
                 }
-                _ = shutdown_rx.changed() => {
-                    info!(
-                        shard_id = %shard_id,
-                        "Shutdown received while getting initial iterator"
-                    );
-                    Err(ProcessorError::Shutdown)
-                }
             }
+            _ = shutdown_rx.changed() => {
+                info!(
+                    shard_id = %shard_id,
+                    "Shutdown received while getting initial iterator"
+                );
+                Err(ProcessorError::Shutdown)
+            }
+        }
     }
 
     /// Process a batch of records
@@ -897,7 +897,7 @@ where
             batch_result.failed_records.len(),
             batch_start.elapsed(),
         ))
-            .await;
+        .await;
 
         // Continue processing with next iterator
         match next_iterator {
@@ -926,7 +926,7 @@ where
             ShardEventType::Started,
             None,
         ))
-            .await;
+        .await;
 
         if *shutdown_rx.borrow() {
             // Send early shutdown event
@@ -935,7 +935,7 @@ where
                 ShardEventType::Interrupted,
                 Some("Early shutdown".to_string()),
             ))
-                .await;
+            .await;
             return Self::handle_early_shutdown(shard_id);
         }
 
@@ -951,7 +951,7 @@ where
                         true,
                         None,
                     ))
-                        .await;
+                    .await;
                 }
                 cp
             }
@@ -962,7 +962,7 @@ where
                     false,
                     Some(e.to_string()),
                 ))
-                    .await;
+                .await;
                 return Err(e);
             }
         };
@@ -977,7 +977,7 @@ where
                         IteratorEventType::Failed,
                         Some(e.to_string()),
                     ))
-                        .await;
+                    .await;
                     return Err(e);
                 }
             };
@@ -1038,7 +1038,7 @@ where
             ShardEventType::Completed,
             None,
         ))
-            .await;
+        .await;
 
         Ok(())
     }
@@ -1105,7 +1105,6 @@ mod tests {
 
     use tracing_subscriber::EnvFilter;
 
-
     // Add TestContext implementation for the processor tests
     struct TestContext {
         pub config: ProcessorConfig,
@@ -1136,7 +1135,6 @@ mod tests {
             }
         }
     }
-
 
     // Add this static for one-time initialization
     static INIT: Once = Once::new();
@@ -1487,7 +1485,6 @@ mod tests {
 
         Ok(())
     }
-
 
     // Helper function to verify processing completion
     async fn verify_processing_complete(
