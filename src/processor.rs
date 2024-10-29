@@ -1,9 +1,18 @@
+//! Core processor implementation for handling Kinesis streams
+//!
+//! This module provides the main processing logic for consuming records from 
+//! Kinesis streams. It handles:
+//!
+//! - Shard discovery and management
+//! - Record batch processing with retries
+//! - Checkpointing of progress
+//! - Monitoring and metrics
+//! - Graceful shutdown
+
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use tokio::time::Instant;
-//-----------------------------------------------------------------------------
-// IMPORTS
-//-----------------------------------------------------------------------------
+
 use crate::error::ProcessingError;
 use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ShardEventType};
 use crate::{
@@ -20,29 +29,81 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
 
-//-----------------------------------------------------------------------------
-// TRAITS
-//-----------------------------------------------------------------------------
+/// Trait for implementing record processing logic
+///
+/// Implementors should handle the business logic for processing individual records
+/// and indicate success/failure through the return type.
+///
+/// # Examples
+///
+/// ```rust
+/// use go_zoom_kinesis::{RecordProcessor};
+/// use go_zoom_kinesis::error::ProcessingError;
+/// use aws_sdk_kinesis::types::Record;
+///
+/// // Example data processing function
+/// async fn process_data(data: &[u8]) -> anyhow::Result<()> {
+///     // Simulate some data processing
+///     Ok(())
+/// }
+///
+/// #[derive(Clone)]
+/// struct MyProcessor;
+///
+/// #[async_trait::async_trait]
+/// impl RecordProcessor for MyProcessor {
+///     async fn process_record(&self, record: &Record) -> std::result::Result<(), ProcessingError> {
+///         // Process record data
+///         let data = record.data().as_ref();
+///
+///         match process_data(data).await {
+///             Ok(_) => Ok(()),
+///             Err(e) => Err(ProcessingError::soft(e)) // Will be retried
+///         }
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait RecordProcessor: Send + Sync + Clone {
+    /// Process a single record from the Kinesis stream
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The Kinesis record to process
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if processing succeeded
+    /// * `Err(ProcessingError::SoftFailure)` for retriable errors
+    /// * `Err(ProcessingError::HardFailure)` for permanent failures
     async fn process_record(&self, record: &Record) -> std::result::Result<(), ProcessingError>;
 }
 
+/// Specifies where to start reading from in the stream
 #[derive(Debug, Clone)]
 pub enum InitialPosition {
+    /// Start from the oldest available record
     TrimHorizon,
+    /// Start from the newest record
     Latest,
+    /// Start from a specific sequence number
     AtSequenceNumber(String),
+    /// Start from a specific timestamp
     AtTimestamp(DateTime<Utc>),
 }
 
+/// Result of processing a batch of records
 #[derive(Debug)]
 struct BatchProcessingResult {
+    /// Sequence numbers of successfully processed records
     successful_records: Vec<String>,
+    /// Sequence numbers of failed records
     failed_records: Vec<String>,
+    /// Last successfully processed sequence number
     last_successful_sequence: Option<String>,
 }
 
+/// Tracks failed record sequences to prevent infinite retries
 #[derive(Debug)]
 struct FailureTracker {
     failed_sequences: HashSet<String>,
@@ -55,30 +116,41 @@ impl FailureTracker {
         }
     }
 
+    /// Mark a sequence number as failed
     fn mark_failed(&mut self, sequence: &str) {
         self.failed_sequences.insert(sequence.to_string());
     }
 
+    /// Check if a sequence number should be processed
     fn should_process(&self, sequence: &str) -> bool {
         !self.failed_sequences.contains(sequence)
     }
 }
 
-//-----------------------------------------------------------------------------
-// STRUCTS AND IMPLEMENTATIONS
-//-----------------------------------------------------------------------------
+/// Configuration for the Kinesis processor
 #[derive(Debug, Clone)]
 pub struct ProcessorConfig {
+    /// Name of the Kinesis stream to process
     pub stream_name: String,
+    /// Maximum number of records to request per GetRecords call
     pub batch_size: i32,
+    /// Timeout for API calls to AWS
     pub api_timeout: Duration,
+    /// Maximum time allowed for processing a single record
     pub processing_timeout: Duration,
+    /// Optional total runtime limit
     pub total_timeout: Option<Duration>,
+    /// Maximum number of retry attempts (None for infinite)
     pub max_retries: Option<u32>,
+    /// How often to refresh the shard list
     pub shard_refresh_interval: Duration,
+    /// Maximum number of shards to process concurrently
     pub max_concurrent_shards: Option<u32>,
+    /// Monitoring configuration
     pub monitoring: MonitoringConfig,
+    /// Where to start reading from in the stream
     pub initial_position: InitialPosition,
+    /// Whether to prefer stored checkpoints over initial position
     pub prefer_stored_checkpoint: bool,
 }
 
@@ -99,6 +171,8 @@ impl Default for ProcessorConfig {
         }
     }
 }
+
+/// Internal context holding processor state and dependencies
 #[derive(Clone)]
 pub struct ProcessingContext<P, C, S>
 where
@@ -106,10 +180,15 @@ where
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
+    /// The user-provided record processor implementation
     processor: Arc<P>,
+    /// AWS Kinesis client
     client: Arc<C>,
+    /// Checkpoint storage implementation
     store: Arc<S>,
+    /// Processor configuration
     config: ProcessorConfig,
+    /// Channel for sending monitoring events
     monitoring_tx: Option<mpsc::Sender<ProcessingEvent>>,
 }
 
@@ -119,6 +198,15 @@ where
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
+    /// Creates a new processing context
+    ///
+    /// # Arguments
+    ///
+    /// * `processor` - The record processor implementation
+    /// * `client` - AWS Kinesis client
+    /// * `store` - Checkpoint storage implementation
+    /// * `config` - Processor configuration
+    /// * `monitoring_tx` - Optional channel for monitoring events
     pub fn new(
         processor: P,
         client: C,
@@ -135,6 +223,7 @@ where
         }
     }
 
+    /// Sends a monitoring event if monitoring is enabled
     async fn send_monitoring_event(&self, event: ProcessingEvent) {
         if let Some(tx) = &self.monitoring_tx {
             if let Err(e) = tx.send(event).await {
@@ -145,10 +234,46 @@ where
         }
     }
 
+    /// Checks if an error indicates an expired iterator
     fn is_iterator_expired(&self, error: &anyhow::Error) -> bool {
         error.to_string().contains("Iterator expired")
     }
 }
+
+/// Main Kinesis stream processor
+///
+/// Handles the orchestration of:
+/// - Shard discovery and management
+/// - Record batch processing
+/// - Checkpointing
+/// - Monitoring
+/// - Graceful shutdown
+///
+/// # Examples
+///
+/// ```rust
+/// use go_zoom_kinesis::{KinesisProcessor, ProcessorConfig, RecordProcessor, ProcessorError};
+/// use aws_sdk_kinesis::Client;
+/// use go_zoom_kinesis::store::InMemoryCheckpointStore;
+///
+/// async fn run_processor(
+///     processor: impl RecordProcessor + 'static,
+///     client: Client,
+///     config: ProcessorConfig
+/// ) -> Result<(), ProcessorError> {
+///     let store = InMemoryCheckpointStore::new();
+///     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+///
+///     let (processor, _monitoring_rx) = KinesisProcessor::new(
+///         config,
+///         processor,
+///         client,
+///         store
+///     );
+///
+///     processor.run(shutdown_rx).await
+/// }
+/// ```
 
 pub struct KinesisProcessor<P, C, S>
 where
@@ -159,15 +284,24 @@ where
     context: ProcessingContext<P, C, S>,
 }
 
-//-----------------------------------------------------------------------------
-// MAIN IMPLEMENTATION
-//-----------------------------------------------------------------------------
 impl<P, C, S> KinesisProcessor<P, C, S>
 where
     P: RecordProcessor + Send + Sync + Clone + 'static,
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
+    /// Creates a new processor instance
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Processor configuration
+    /// * `processor` - Record processor implementation
+    /// * `client` - AWS Kinesis client
+    /// * `store` - Checkpoint storage implementation
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple of the processor instance and an optional monitoring channel receiver
     pub fn new(
         config: ProcessorConfig,
         processor: P,
@@ -186,6 +320,17 @@ where
         (Self { context }, monitoring_rx)
     }
 
+    /// Saves a checkpoint for a processed record
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard being processed
+    /// * `sequence` - Sequence number to checkpoint
+    ///
+    /// # Returns
+    ///
+    /// Returns true if checkpoint was saved successfully
     async fn checkpoint_record(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -213,13 +358,22 @@ where
                     sequence.to_string(),
                     e.to_string(),
                 ))
-                .await;
+                    .await;
 
                 Ok(false)
             }
         }
     }
 
+    /// Starts processing the Kinesis stream
+    ///
+    /// # Arguments
+    ///
+    /// * `shutdown` - Channel receiver for shutdown signals
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) on successful shutdown, or Error on processing failures
     pub async fn run(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         info!(stream = %self.context.config.stream_name, "Starting Kinesis processor");
 
@@ -242,6 +396,18 @@ where
         Ok(())
     }
 
+    /// Process a record with retries and monitoring
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `record` - The record to process
+    /// * `shard_id` - ID of the shard being processed
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
+    ///
+    /// # Returns
+    ///
+    /// Returns true if processing succeeded, false if failed after retries
     async fn process_record_with_retries(
         ctx: &ProcessingContext<P, C, S>,
         record: &Record,
@@ -262,7 +428,7 @@ where
                 process_result = ctx.processor.process_record(record) => {
                     match process_result {
                         Ok(_) => {
-                            // Emit record attempt event for backward compatibility
+                            // Emit successful attempt event
                             ctx.send_monitoring_event(ProcessingEvent::record_attempt(
                                 shard_id.to_string(),
                                 sequence.clone(),
@@ -273,7 +439,7 @@ where
                                 false, // not final attempt
                             )).await;
 
-                            // Attempt to checkpoint immediately
+                            // Attempt to checkpoint
                             match Self::checkpoint_record(ctx, shard_id, &sequence).await? {
                                 true => {
                                     // Emit success event
@@ -292,7 +458,7 @@ where
                                     return Ok(true);
                                 }
                                 false => {
-                                    // Checkpoint failed
+                                    // Handle checkpoint failure
                                     ctx.send_monitoring_event(ProcessingEvent::checkpoint_failure(
                                         shard_id.to_string(),
                                         sequence.clone(),
@@ -441,6 +607,8 @@ where
             }
         }
     }
+
+    /// Process all shards in the stream
     async fn process_stream(
         &self,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
@@ -484,6 +652,15 @@ where
 
         Ok(())
     }
+
+    /// Get a batch of records from a shard
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard being processed
+    /// * `iterator` - Shard iterator for getting records
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
     async fn get_records_batch(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -521,6 +698,15 @@ where
         }
     }
 
+    /// Process a batch of records from a shard
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard being processed
+    /// * `records` - Batch of records to process
+    /// * `state` - Current processing state
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
     async fn process_records(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -569,11 +755,12 @@ where
             result.failed_records.len(),
             batch_start.elapsed(),
         ))
-        .await;
+            .await;
 
         Ok(result)
     }
 
+    /// Handle early shutdown request
     fn handle_early_shutdown(shard_id: &str) -> Result<()> {
         info!(
             shard_id = %shard_id,
@@ -581,6 +768,13 @@ where
         );
         Err(ProcessorError::Shutdown)
     }
+
+    /// Initialize checkpoint for a shard
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard to initialize
     async fn initialize_checkpoint(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -609,6 +803,14 @@ where
         }
     }
 
+    /// Get initial iterator for a shard
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard
+    /// * `checkpoint` - Optional checkpoint to start from
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
     async fn get_initial_iterator(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -624,10 +826,10 @@ where
         tokio::select! {
                 iterator_result = ctx.client.get_shard_iterator(
                      &ctx.config.stream_name,
-        shard_id,
-        iterator_type,
-        checkpoint.as_deref(),
-        None,
+                    shard_id,
+                    iterator_type,
+                    checkpoint.as_deref(),
+                    None,
                 ) => {
                     match iterator_result {
                         Ok(iterator) => {
@@ -657,12 +859,12 @@ where
             }
     }
 
+    /// Process a batch of records
     async fn process_batch(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
         iterator: &str,
         state: &mut ShardProcessingState,
-
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<BatchResult> {
         let batch_start = std::time::Instant::now();
@@ -695,7 +897,7 @@ where
             batch_result.failed_records.len(),
             batch_start.elapsed(),
         ))
-        .await;
+            .await;
 
         // Continue processing with next iterator
         match next_iterator {
@@ -703,9 +905,14 @@ where
             None => Ok(BatchResult::EndOfShard),
         }
     }
-    //-----------------------------------------------------------------------------
-    // PROCESS_SHARD IMPLEMENTATION
-    //-----------------------------------------------------------------------------
+
+    /// Process a single shard
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `shard_id` - ID of the shard to process
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
     async fn process_shard(
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
@@ -719,7 +926,7 @@ where
             ShardEventType::Started,
             None,
         ))
-        .await;
+            .await;
 
         if *shutdown_rx.borrow() {
             // Send early shutdown event
@@ -728,7 +935,7 @@ where
                 ShardEventType::Interrupted,
                 Some("Early shutdown".to_string()),
             ))
-            .await;
+                .await;
             return Self::handle_early_shutdown(shard_id);
         }
 
@@ -744,7 +951,7 @@ where
                         true,
                         None,
                     ))
-                    .await;
+                        .await;
                 }
                 cp
             }
@@ -755,7 +962,7 @@ where
                     false,
                     Some(e.to_string()),
                 ))
-                .await;
+                    .await;
                 return Err(e);
             }
         };
@@ -770,7 +977,7 @@ where
                         IteratorEventType::Failed,
                         Some(e.to_string()),
                     ))
-                    .await;
+                        .await;
                     return Err(e);
                 }
             };
@@ -783,7 +990,6 @@ where
                     shard_id,
                     &iterator,
                     &mut state,
-
                     &mut shutdown_rx,
                 ) => {
                     match batch_result {
@@ -832,16 +1038,19 @@ where
             ShardEventType::Completed,
             None,
         ))
-        .await;
+            .await;
 
         Ok(())
     }
 }
 
+/// Tracks the state of shard processing
 struct ShardProcessingState {
+    /// Tracks failed record sequences
     failure_tracker: FailureTracker,
-
+    /// Last successfully processed sequence number
     last_successful_sequence: Option<String>,
+    /// Set of sequence numbers currently being processed
     pending_sequences: HashSet<String>,
 }
 
@@ -849,16 +1058,17 @@ impl ShardProcessingState {
     fn new() -> Self {
         Self {
             failure_tracker: FailureTracker::new(),
-
             last_successful_sequence: None,
             pending_sequences: HashSet::new(),
         }
     }
 
+    /// Mark a sequence as pending processing
     fn mark_sequence_pending(&mut self, sequence: String) {
         self.pending_sequences.insert(sequence);
     }
 
+    /// Mark a sequence as successfully completed
     fn mark_sequence_complete(&mut self, sequence: String) {
         debug!(
             sequence = %sequence,
@@ -870,16 +1080,17 @@ impl ShardProcessingState {
     }
 }
 
+/// Result of batch processing operations
 #[allow(dead_code)]
 enum BatchResult {
-    Continue(String), // Contains next iterator
+    /// Continue processing with new iterator
+    Continue(String),
+    /// End of shard reached
     EndOfShard,
+    /// No records received
     NoRecords,
 }
 
-//-----------------------------------------------------------------------------
-// TESTS
-//-----------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,6 +1104,39 @@ mod tests {
     use tokio::sync::Mutex;
 
     use tracing_subscriber::EnvFilter;
+
+
+    // Add TestContext implementation for the processor tests
+    struct TestContext {
+        pub config: ProcessorConfig,
+        pub client: MockKinesisClient,
+        pub processor: MockRecordProcessor,
+        pub store: MockCheckpointStore,
+    }
+
+    impl TestContext {
+        fn new() -> Self {
+            Self {
+                config: ProcessorConfig {
+                    stream_name: "test-stream".to_string(),
+                    batch_size: 100,
+                    api_timeout: Duration::from_secs(1),
+                    processing_timeout: Duration::from_secs(1),
+                    total_timeout: None,
+                    max_retries: Some(2),
+                    shard_refresh_interval: Duration::from_secs(1),
+                    max_concurrent_shards: None,
+                    monitoring: MonitoringConfig::default(),
+                    initial_position: InitialPosition::TrimHorizon,
+                    prefer_stored_checkpoint: true,
+                },
+                client: MockKinesisClient::new(),
+                processor: MockRecordProcessor::new(),
+                store: MockCheckpointStore::new(),
+            }
+        }
+    }
+
 
     // Add this static for one-time initialization
     static INIT: Once = Once::new();
@@ -1159,7 +1403,6 @@ mod tests {
 
         Ok(())
     }
-
     #[tokio::test]
     async fn test_processor_with_monitoring() -> anyhow::Result<()> {
         init_logging();
@@ -1242,6 +1485,27 @@ mod tests {
             .count();
         assert!(record_events > 0, "Should have record processing events");
 
+        Ok(())
+    }
+
+
+    // Helper function to verify processing completion
+    async fn verify_processing_complete(
+        processor: &MockRecordProcessor,
+        expected_count: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let start = std::time::Instant::now();
+        while processor.get_process_count().await < expected_count {
+            if start.elapsed() > timeout {
+                anyhow::bail!(
+                    "Timeout waiting for {} records to be processed, got {}",
+                    expected_count,
+                    processor.get_process_count().await
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         Ok(())
     }
 }
