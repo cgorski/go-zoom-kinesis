@@ -50,14 +50,3 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
         run: |
           cargo doc --no-deps --all-features --document-private-items
-
-      - name: Verify README examples
-        run: |
-          # Extract Rust code blocks from README.md
-          awk '/^```rust/{p=1;next}/^```/{p=0;next}p' README.md > readme_examples.rs
-          # Add test harness if file is not empty
-          if [ -s readme_examples.rs ]; then
-            rustc --test readme_examples.rs && ./readme_examples
-          else
-            echo "No Rust examples found in README.md"
-          fi

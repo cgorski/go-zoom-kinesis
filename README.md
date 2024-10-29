@@ -3,7 +3,7 @@
 [![CI](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml/badge.svg)](https://github.com/cgorski/go-zoom-kinesis/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/cgorski/go-zoom-kinesis/branch/main/graph/badge.svg)](https://codecov.io/gh/cgorski/go-zoom-kinesis)
 [![Crates.io](https://img.shields.io/crates/v/go-zoom-kinesis.svg)](https://crates.io/crates/go-zoom-kinesis)
-![Documentation](https://docs.rs/go-zoom-kinesis/badge.svg)]
+[![Documentation](https://docs.rs/go-zoom-kinesis/badge.svg)](https://docs.rs/go-zoom-kinesis)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A robust, production-ready AWS Kinesis stream processor with checkpointing and retry capabilities. Built with reliability and performance in mind.
@@ -24,27 +24,30 @@ A robust, production-ready AWS Kinesis stream processor with checkpointing and r
 ### Basic Usage 📓
 
 ```rust
-use go_zoom_kinesis:{
+use go_zoom_kinesis::{
     KinesisProcessor, ProcessorConfig, RecordProcessor,
     store::InMemoryCheckpointStore,
     InitialPosition,
+    monitoring::MonitoringConfig,
 };
-use aws_sdk_kinesis::Client;
+use aws_sdk_kinesis::{Client, types::Record};
 use std::time::Duration;
+use async_trait::async_trait;
+use anyhow::Result;
 
 #[derive(Clone)]
 struct MyProcessor;
 
-#[async_trait::async_trait]
+#[async_trait]
 impl RecordProcessor for MyProcessor {
-    async fn process_record(&self, record: &Record) -> anyhow::Result<()> {
-        println!("Processing record: {}", record);
+    async fn process_record(&self, record: &Record) -> Result<()> {
+        println!("Processing record: {:?}", record);
         Ok(())
     }
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     // Configure AWS client
     let config = aws_config::load_from_env().await;
     let client = Client::new(&config);
@@ -69,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize processor components
     let processor = MyProcessor;
     let checkpoint_store = InMemoryCheckpointStore::new();
-    
+
     // Create and run the processor
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (processor, monitoring_rx) = KinesisProcessor::new(
@@ -79,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         checkpoint_store,
     );
 
-    processor.run(shutdown_rx).await?
+    processor.run(shutdown_rx).await?;
     Ok(())
 }
 ```
@@ -89,44 +92,47 @@ async fn main() -> anyhow::Result<()> {
 The processor supports flexible stream position initialization:
 
 ```rust
+use go_zoom_kinesis::{ProcessorConfig, InitialPosition};
+use chrono::{DateTime, Utc};
+
 // Start from oldest available record
 let config = ProcessorConfig {
-    initial_position: InitialPosition::TrimHorizon,
-    prefer_stored_checkpoint: true,  // Will check checkpoint store first
-    ..Default::default()
+initial_position: InitialPosition::TrimHorizon,
+prefer_stored_checkpoint: true,  // Will check checkpoint store first
+..Default::default()
 };
 
 // Start from tip of the stream
 let config = ProcessorConfig {
-    initial_position: InitialPosition::Latest,
-    ..Default::default()
+initial_position: InitialPosition::Latest,
+..Default::default()
 };
 
 // Start from specific sequence number
 let config = ProcessorConfig {
-    initial_position: InitialPosition::AtSequenceNumber(
-       "49579292999999999999999999".to_string()
-    ),
-    ..Default::default()
+initial_position: InitialPosition::AtSequenceNumber(
+"49579292999999999999999999".to_string()
+),
+..Default::default()
 };
 
 // Start from specific timestamp
-use chrono::{DateTime, Utc};
 let config = ProcessorConfig {
-    initial_position: InitialPosition::AtTimestamp(
-        Utc::now() - chrono::Duration::hours(1)
-    ),
-    ..Default::default()
+initial_position: InitialPosition::AtTimestamp(
+Utc::now() - chrono::Duration::hours(1)
+),
+..Default::default()
 };
 ```
 
-### Using DynamoDB Checkpoint Store 🚀
+### DynamoDB Checkpoint Store Example ###
 
 ```rust
 use go_zoom_kinesis::store::DynamoDbCheckpointStore;
+use anyhow::Result;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let config = aws_config::load_from_env().await;
     let dynamo_client = aws_sdk_dynamodb::Client::new(&config);
     let checkpoint_store = DynamoDbCheckpointStore::new(
@@ -144,12 +150,15 @@ async fn main() -> anyhow::Result<()> {
 
 ```rust
 use go_zoom_kinesis::{ProcessorError, RecordProcessor};
+use aws_sdk_kinesis::types::Record;
+use async_trait::async_trait;
+use anyhow::Result;
 
 struct MyProcessor;
 
-#[async_trait::async_trait]
+#[async_trait]
 impl RecordProcessor for MyProcessor {
-    async fn process_record(&self, record: &Record) -> anyhow::Result<()> {
+    async fn process_record(&self, record: &Record) -> Result<()> {
         match process_data(record).await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -160,29 +169,34 @@ impl RecordProcessor for MyProcessor {
         }
     }
 }
+
+// For the example to compile
+async fn process_data(_record: &Record) -> Result<()> {
+    Ok(())
+}
 ```
 
 ### Configuring Retries 🔄
 
 ```rust
-use go_zoom_kinesis:{ProcessorConfig, ExponentialBackoff};
+use go_zoom_kinesis::{ProcessorConfig, ExponentialBackoff, monitoring::MonitoringConfig};
 use std::time::Duration;
 
 let config = ProcessorConfig {
-    max_retries: Some(5),
-    monitoring: MonitoringConfig {
-        include_retry_details: true,
-        ..Default::default()
-    },
-    ..Default::default()
+max_retries: Some(5),
+monitoring: MonitoringConfig {
+include_retry_details: true,
+..Default::default()
+},
+..Default::default()
 };
 
 let backoff = ExponentialBackoff::builder()
-    .initial_delay(Duration::from_millis(100))
-    .max_delay(Duration::from_secs(30))
-    .multiplier(2.0)
-    .jitter_factor(0.1)
-    .build();
+.initial_delay(Duration::from_millis(100))
+.max_delay(Duration::from_secs(30))
+.multiplier(2.0)
+.jitter_factor(0.1)
+.build();
 ```
 
 ### Checkpoint Recovery Behavior 🔄
