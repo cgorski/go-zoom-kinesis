@@ -1,5 +1,4 @@
-# .github/workflows/release.yml
-name: Release
+name: Release Management
 
 on:
   push:
@@ -10,8 +9,50 @@ permissions:
   contents: write
   discussions: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  publish:
+  verify:
+    name: Verify Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Verify versions match
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | cut -d '"' -f 2)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch: Cargo.toml ($CARGO_VERSION) != Tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Check for breaking changes
+        id: breaking
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "none")
+          if [ "$PREV_TAG" != "none" ]; then
+            BREAKING=$(git log $PREV_TAG..HEAD --pretty=format:"%s" | grep -i "breaking change" || true)
+            if [ ! -z "$BREAKING" ]; then
+              echo "::set-output name=has_breaking::true"
+              echo "Breaking changes detected!"
+            fi
+          fi
+
+  test:
+    name: Test Release
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -23,39 +64,78 @@ jobs:
           toolchain: stable
           override: true
 
-      # Verify the tag matches the Cargo.toml version
-      - name: Verify versions match
-        run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | cut -d '"' -f 2)
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "Version mismatch: Cargo.toml ($CARGO_VERSION) != Tag ($TAG_VERSION)"
-            exit 1
-          fi
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
-      # Verify the package builds
-      - name: Build
-        run: cargo build --release --all-features
+      - name: Run tests
+        run: cargo test --all-features --release
 
-      # Run tests
-      - name: Test
-        run: cargo test --release --all-features
-
-      # Verify the package contents are correct
       - name: Verify package
         run: cargo package --no-verify
 
-      # Publish to crates.io
+  publish:
+    name: Publish Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Generate Changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v3
+        with:
+          configuration: |
+            {
+              "categories": [
+                {
+                  "title": "## 🚀 Features",
+                  "labels": ["feature", "enhancement"]
+                },
+                {
+                  "title": "## 🐛 Fixes",
+                  "labels": ["fix", "bug"]
+                },
+                {
+                  "title": "## 💬 Other",
+                  "labels": ["other"]
+                },
+                {
+                  "title": "## 📦 Dependencies",
+                  "labels": ["dependencies"]
+                }
+              ]
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GO_ZOOM_KINESIS }}
+
       - name: Publish to crates.io
         run: cargo publish --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUSH }}
 
-      # Create GitHub Release
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.ref_name }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GO_ZOOM_KINESIS }}
+ 
