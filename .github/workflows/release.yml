@@ -9,6 +9,10 @@ permissions:
   contents: write
   discussions: write
 
+concurrency:
+  group: "release-${{ github.ref }}"
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -45,7 +49,7 @@ jobs:
           if [ "$PREV_TAG" != "none" ]; then
             BREAKING=$(git log $PREV_TAG..HEAD --pretty=format:"%s" | grep -i "breaking change" || true)
             if [ ! -z "$BREAKING" ]; then
-              echo "::set-output name=has_breaking::true"
+              echo "has_breaking=true" >> $GITHUB_OUTPUT
               echo "Breaking changes detected!"
             fi
           fi
@@ -95,39 +99,39 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Generate Changelog
-        id: changelog
-        uses: mikepenz/release-changelog-builder-action@v3
-        with:
-          configuration: |
-            {
-              "categories": [
-                {
-                  "title": "## 🚀 Features",
-                  "labels": ["feature", "enhancement"]
-                },
-                {
-                  "title": "## 🐛 Fixes",
-                  "labels": ["fix", "bug"]
-                },
-                {
-                  "title": "## 💬 Other",
-                  "labels": ["other"]
-                },
-                {
-                  "title": "## 📦 Dependencies",
-                  "labels": ["dependencies"]
-                }
-              ]
-            }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #      - name: Generate Changelog
+      #        id: changelog
+      #        uses: mikepenz/release-changelog-builder-action@v3
+      #        with:
+      #          configuration: |
+      #            {
+      #              "categories": [
+      #                {
+      #                  "title": "## 🚀 Features",
+      #                  "labels": ["feature", "enhancement"]
+      #                },
+      #                {
+      #                  "title": "## 🐛 Fixes",
+      #                  "labels": ["fix", "bug"]
+      #                },
+      #                {
+      #                  "title": "## 💬 Other",
+      #                  "labels": ["other"]
+      #                },
+      #                {
+      #                  "title": "## 📦 Dependencies",
+      #                  "labels": ["dependencies"]
+      #                }
+      #              ]
+      #            }
+      #        env:
+      #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           name: Release ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.changelog }}
+          #          body: ${{ steps.changelog.outputs.changelog }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
         env:
@@ -137,5 +141,3 @@ jobs:
         run: cargo publish --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_PUSH }}
-
- 
