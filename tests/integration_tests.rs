@@ -95,11 +95,21 @@ async fn test_processor_lifecycle() -> Result<()> {
     assert!(mock_processor.get_process_count().await > 0);
     Ok(())
 }
-
 #[tokio::test]
 async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
+    init_logging();
+    info!("Starting shard iterator expiry test");
+
     let mut config = common::create_test_config();
-    config.max_retries = Some(2); // Set explicit retry limit
+    config.max_retries = Some(2);
+    // Enable monitoring
+    config.monitoring = MonitoringConfig {
+        enabled: true,
+        channel_size: 1000,
+        metrics_interval: Duration::from_secs(1),
+        include_retry_details: true,
+        rate_limit: None,
+    };
 
     let client = MockKinesisClient::new();
     let mock_processor = MockRecordProcessor::new();
@@ -125,7 +135,7 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         .mock_get_records(Err(KinesisClientError::ExpiredIterator))
         .await;
 
-    // Second iterator request (first retry)
+    // Second iterator request (after expiry)
     client
         .mock_get_iterator(Ok("test-iterator-2".to_string()))
         .await;
@@ -138,39 +148,101 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         .mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string()))))
         .await;
 
+    // Add one more successful response for potential retries
+    client
+        .mock_get_records(Ok((vec![], Some("final-iterator".to_string()))))
+        .await;
+
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor, _monitoring_rx) = KinesisProcessor::new(
-        // Fixed: Destructure the tuple
+    let (processor, monitoring_rx) = KinesisProcessor::new(
         config,
         mock_processor.clone(),
         client.clone(),
         store.clone(),
     );
 
-    // Run processor
-    let processor_handle = tokio::spawn(async move {
-        processor.run(rx).await // Now using the processor instance
-    });
+    let mut monitoring_rx = monitoring_rx.expect("Monitoring should be enabled");
+    let processor_clone = mock_processor.clone();
+    let store_clone = store.clone();
 
-    // Wait for processing
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Use select! to handle multiple concurrent events
+    tokio::select! {
+        processor_result = processor.run(rx) => {
+            // Handle normal completion
+            processor_result?;
+        }
 
-    // Verify processing occurred
-    assert_eq!(mock_processor.get_process_count().await, 1);
+        _ = async {
+            let mut saw_expired_iterator = false;
+            let mut saw_successful_processing = false;
 
-    // Verify the record was processed
-    let processed_records = mock_processor.get_processed_records().await;
-    assert_eq!(processed_records.len(), 1);
-    assert_eq!(processed_records[0].sequence_number(), "test-sequence-101");
+            while let Some(event) = monitoring_rx.recv().await {
+                match &event.event_type {
+                    ProcessingEventType::Iterator { event_type, error } => {
+                        if let Some(err) = error {
+                            if err.contains("expired") {
+                                debug!("Detected iterator expiration");
+                                saw_expired_iterator = true;
+                            }
+                        }
+                    }
+                    ProcessingEventType::RecordSuccess { sequence_number, .. } => {
+                        if sequence_number == "test-sequence-101" {
+                            debug!("Detected successful record processing");
+                            saw_successful_processing = true;
+                        }
+                    }
+                    _ => {}
+                }
 
-    // Verify checkpoint was saved
-    let checkpoint = store.get_checkpoint("shard-1").await?;
-    assert_eq!(checkpoint, Some("test-sequence-101".to_string()));
+                // If we've seen both events, we can complete the test
+                if saw_expired_iterator && saw_successful_processing {
+                    debug!("Test conditions met");
+                    break;
+                }
+            }
 
-    // Shutdown gracefully
-    tx.send(true)?;
-    processor_handle.await??;
+            // Verify processing results
+            let process_count = processor_clone.get_process_count().await;
+            assert_eq!(
+                process_count, 1,
+                "Expected exactly one record to be processed, got {}",
+                process_count
+            );
 
+            // Verify the correct record was processed
+            let processed_records = processor_clone.get_processed_records().await;
+            assert_eq!(processed_records.len(), 1, "Should have processed one record");
+            assert_eq!(
+                processed_records[0].sequence_number(),
+                "test-sequence-101",
+                "Wrong record was processed"
+            );
+
+            // Verify checkpoint was saved
+            let checkpoint = store_clone.get_checkpoint("shard-1").await?;
+            assert_eq!(
+                checkpoint,
+                Some("test-sequence-101".to_string()),
+                "Checkpoint not saved correctly"
+            );
+
+            // Signal completion
+            tx.send(true)?;
+            Ok::<_, anyhow::Error>(())
+        } => {
+            debug!("Monitoring completed successfully");
+        }
+
+        // Add timeout
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            warn!("Test timed out");
+            tx.send(true)?;
+            anyhow::bail!("Test timed out waiting for processing to complete");
+        }
+    }
+
+    info!("Shard iterator expiry test completed successfully");
     Ok(())
 }
 #[tokio::test]

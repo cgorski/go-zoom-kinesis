@@ -889,40 +889,80 @@ where
     ) -> Result<BatchResult> {
         let batch_start = std::time::Instant::now();
 
-        let (records, next_iterator) =
-            Self::get_records_batch(ctx, shard_id, iterator, shutdown_rx).await?;
+        match Self::get_records_batch(ctx, shard_id, iterator, shutdown_rx).await {
+            Err(ProcessorError::IteratorExpired(_)) => {
+                // Send iterator expired event
+                ctx.send_monitoring_event(ProcessingEvent::iterator(
+                    shard_id.to_string(),
+                    IteratorEventType::Expired,
+                    None,
+                )).await;
 
-        if records.is_empty() && next_iterator.is_none() {
-            return Ok(BatchResult::EndOfShard);
-        }
+                // Get new iterator
+                let new_iterator = Self::get_initial_iterator(
+                    ctx,
+                    shard_id,
+                    &state.last_successful_sequence,
+                    shutdown_rx
+                ).await?;
 
-        let batch_result =
-            Self::process_records(ctx, shard_id, &records, state, shutdown_rx).await?;
+                // Send iterator renewed event
+                ctx.send_monitoring_event(ProcessingEvent::iterator(
+                    shard_id.to_string(),
+                    IteratorEventType::Renewed,
+                    None,
+                )).await;
 
-        // Handle batch completion
-        if !batch_result.successful_records.is_empty() {
-            if let Some(last_sequence) = &batch_result.last_successful_sequence {
-                debug!(
-                    shard_id = %shard_id,
-                    sequence = %last_sequence,
-                    "Batch had successful records"
-                );
+                Ok(BatchResult::Continue(new_iterator))
             }
-        }
+            Ok((records, next_iterator)) => {
+                if records.is_empty() && next_iterator.is_none() {
+                    return Ok(BatchResult::EndOfShard);
+                }
 
-        // Send batch-level monitoring event
-        ctx.send_monitoring_event(ProcessingEvent::batch_complete(
-            shard_id.to_string(),
-            batch_result.successful_records.len(),
-            batch_result.failed_records.len(),
-            batch_start.elapsed(),
-        ))
-        .await;
+                let batch_result = Self::process_records(
+                    ctx,
+                    shard_id,
+                    &records,
+                    state,
+                    shutdown_rx
+                ).await?;
 
-        // Continue processing with next iterator
-        match next_iterator {
-            Some(next) => Ok(BatchResult::Continue(next)),
-            None => Ok(BatchResult::EndOfShard),
+                // Handle batch completion
+                if !batch_result.successful_records.is_empty() {
+                    if let Some(last_sequence) = &batch_result.last_successful_sequence {
+                        debug!(
+                        shard_id = %shard_id,
+                        sequence = %last_sequence,
+                        "Batch had successful records"
+                    );
+                    }
+                }
+
+                // Send batch-level monitoring event
+                ctx.send_monitoring_event(ProcessingEvent::batch_complete(
+                    shard_id.to_string(),
+                    batch_result.successful_records.len(),
+                    batch_result.failed_records.len(),
+                    batch_start.elapsed(),
+                )).await;
+
+                // Continue processing with next iterator
+                match next_iterator {
+                    Some(next) => Ok(BatchResult::Continue(next)),
+                    None => Ok(BatchResult::EndOfShard),
+                }
+            }
+            Err(e) => {
+                // Send error event
+                ctx.send_monitoring_event(ProcessingEvent::shard_event(
+                    shard_id.to_string(),
+                    ShardEventType::Error,
+                    Some(e.to_string()),
+                )).await;
+
+                Err(e)
+            }
         }
     }
 
