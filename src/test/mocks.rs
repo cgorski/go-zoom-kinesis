@@ -17,18 +17,48 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::debug;
+use crate::client::KinesisClientError;
 
 /// Mock Kinesis client for testing
+
+
 #[derive(Debug, Default, Clone)]
 pub struct MockKinesisClient {
-    list_shards_responses: Arc<Mutex<VecDeque<Result<Vec<Shard>>>>>,
-    get_iterator_responses: Arc<Mutex<VecDeque<Result<String>>>>,
     #[allow(clippy::type_complexity)]
-    get_records_responses: Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>)>>>>,
+    list_shards_responses: Arc<Mutex<VecDeque<Result<Vec<Shard>, KinesisClientError>>>>,
+    #[allow(clippy::type_complexity)]
+    get_iterator_responses: Arc<Mutex<VecDeque<Result<String, KinesisClientError>>>>,
+    #[allow(clippy::type_complexity)]
+    get_records_responses: Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>), KinesisClientError>>>>,
     iterator_request_count: Arc<AtomicUsize>,
 }
 
 impl MockKinesisClient {
+    pub async fn mock_error(&self, error: KinesisClientError) {
+        self.get_records_responses
+            .lock()
+            .await
+            .push_back(Err(error));
+    }
+    pub async fn mock_expired_iterator(&self) {
+        // Clear any existing responses
+        self.get_records_responses.lock().await.clear();
+        // Add the expired iterator error
+        self.get_records_responses
+            .lock()
+            .await
+            .push_back(Err(KinesisClientError::ExpiredIterator));
+    }
+
+    pub async fn mock_throughput_exceeded(&self) {
+        self.mock_error(KinesisClientError::ThroughputExceeded).await;
+    }
+    pub async fn mock_default_responses(&self) {
+        self.get_records_responses
+            .lock()
+            .await
+            .push_back(Ok((vec![], Some("default-iterator".to_string()))));
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -40,30 +70,31 @@ impl MockKinesisClient {
     async fn increment_iterator_count(&self) {
         self.iterator_request_count.fetch_add(1, Ordering::SeqCst);
     }
-
-    pub async fn mock_list_shards(&self, response: Result<Vec<Shard>>) {
+    pub async fn mock_list_shards(&self, response: Result<Vec<Shard>, KinesisClientError>) {
         self.list_shards_responses.lock().await.push_back(response);
     }
 
-    pub async fn mock_get_iterator(&self, response: Result<String>) {
+    pub async fn mock_get_iterator(&self, response: Result<String, KinesisClientError>) {
         self.get_iterator_responses.lock().await.push_back(response);
     }
 
-    pub async fn mock_get_records(&self, response: Result<(Vec<Record>, Option<String>)>) {
+    pub async fn mock_get_records(
+        &self,
+        response: Result<(Vec<Record>, Option<String>), KinesisClientError>,
+    ) {
         self.get_records_responses.lock().await.push_back(response);
     }
 
-    pub async fn mock_default_responses(&self) {
-        self.get_records_responses
-            .lock()
-            .await
-            .push_back(Ok((vec![], Some("default-iterator".to_string()))));
+
+    // Helper method to convert anyhow errors to KinesisClientError
+    fn convert_error<T>(result: anyhow::Result<T>) -> Result<T, KinesisClientError> {
+        result.map_err(|e| KinesisClientError::Other(e.to_string()))
     }
 }
 
 #[async_trait]
 impl KinesisClientTrait for MockKinesisClient {
-    async fn list_shards(&self, _stream_name: &str) -> Result<Vec<Shard>> {
+    async fn list_shards(&self, _stream_name: &str) -> Result<Vec<Shard>, KinesisClientError> {
         self.list_shards_responses
             .lock()
             .await
@@ -78,7 +109,7 @@ impl KinesisClientTrait for MockKinesisClient {
         _iterator_type: ShardIteratorType,
         _sequence_number: Option<&str>,
         _timestamp: Option<&DateTime<Utc>>,
-    ) -> Result<String> {
+    ) -> Result<String, KinesisClientError> {
         self.increment_iterator_count().await;
         self.get_iterator_responses
             .lock()
@@ -93,29 +124,43 @@ impl KinesisClientTrait for MockKinesisClient {
         retry_count: u32,
         max_retries: Option<u32>,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<(Vec<Record>, Option<String>)> {
+    ) -> Result<(Vec<Record>, Option<String>), KinesisClientError> {
         let mut current_retry = retry_count;
-        loop {
-            if *shutdown.borrow() {
-                return Err(anyhow::anyhow!("Shutdown requested"));
-            }
 
-            match self.get_records_responses.lock().await.pop_front() {
-                Some(result) => match result {
-                    Ok(response) => return Ok(response),
+        if *shutdown.borrow() {
+            return Err(KinesisClientError::Other("Shutdown requested".to_string()));
+        }
+
+        // Get response from the queue
+        let response = self.get_records_responses.lock().await.pop_front();
+
+        match response {
+            Some(result) => {
+                match result {
+                    Ok(response) => Ok(response),
                     Err(e) => {
                         current_retry += 1;
                         if current_retry > max_retries.unwrap_or(3) {
-                            return Err(e);
+                            Err(e)
+                        } else {
+                            // Simulate backoff
+                            let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
+                            tokio::time::sleep(delay).await;
+                            // Put the error back in the queue for retry
+                            self.get_records_responses.lock().await.push_front(Err(e));
+                            self.get_records(
+                                _iterator,
+                                _limit,
+                                current_retry,
+                                max_retries,
+                                shutdown,
+                            )
+                                .await
                         }
-
-                        let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
-                        tokio::time::sleep(delay).await;
-                        continue;
                     }
-                },
-                None => return Ok((vec![], None)),
+                }
             }
+            None => Ok((vec![], None)), // Default response when queue is empty
         }
     }
 }
@@ -591,9 +636,8 @@ impl Backoff for MockBackoff {
 mod tests {
     use super::*;
     use aws_smithy_types::Blob;
-
     #[tokio::test]
-    async fn test_mock_kinesis_client() -> Result<()> {
+    async fn test_mock_kinesis_client() -> Result<(), KinesisClientError> {
         let client = MockKinesisClient::new();
 
         // Test list_shards
@@ -618,7 +662,7 @@ mod tests {
                 "shard-1",
                 ShardIteratorType::TrimHorizon,
                 None,
-                None, // Add timestamp parameter
+                None,
             )
             .await?;
         assert_eq!(iterator, "test-iterator");
@@ -644,6 +688,41 @@ mod tests {
         assert_eq!(records[0].sequence_number(), "seq-1");
         assert_eq!(records[0].partition_key(), "test-partition-key");
         assert_eq!(next_iterator, Some("next-iterator".to_string()));
+
+        // Test expired iterator error
+        client.mock_expired_iterator().await;
+        let result = client
+            .get_records("test-iterator", 100, 0, Some(1), &mut shutdown_rx)
+            .await;
+
+        assert!(
+            matches!(result, Err(KinesisClientError::ExpiredIterator)),
+            "Expected ExpiredIterator error, got {:?}",
+            result
+        );
+
+        drop(tx);
+        Ok(())
+    }
+
+
+    // Add separate test for iterator expiration
+    #[tokio::test]
+    async fn test_iterator_expiration() -> Result<(), KinesisClientError> {
+        let client = MockKinesisClient::new();
+
+        client.mock_expired_iterator().await;
+
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let result = client
+            .get_records("test-iterator", 100, 0, Some(1), &mut rx)
+            .await;
+
+        assert!(
+            matches!(result, Err(KinesisClientError::ExpiredIterator)),
+            "Expected ExpiredIterator error, got {:?}",
+            result
+        );
 
         drop(tx);
         Ok(())

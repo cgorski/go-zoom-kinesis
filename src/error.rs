@@ -48,6 +48,9 @@ pub enum ProcessorError {
     #[error("Shutdown requested")]
     Shutdown,
 
+    #[error("Throttling error: {0}")]
+    ThrottlingError(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

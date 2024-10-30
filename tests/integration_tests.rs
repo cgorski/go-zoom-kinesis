@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use tracing::error;
 use tracing::warn;
 use tracing::{debug, info};
+use go_zoom_kinesis::client::KinesisClientError;
 
 mod common;
 
@@ -121,7 +122,7 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
 
     // First get_records fails with expired iterator
     client
-        .mock_get_records(Err(anyhow::anyhow!("Iterator expired")))
+        .mock_get_records(Err(KinesisClientError::ExpiredIterator))
         .await;
 
     // Second iterator request (first retry)
@@ -442,7 +443,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
 
     // Configure initial failure
     ctx.client
-        .mock_list_shards(Err(anyhow::anyhow!("Temporary failure")))
+        .mock_list_shards(Err(KinesisClientError::Other("Temporary failure".to_string())))
         .await;
     event_log.log(TestEventType::ShardListAttempt, None).await;
     tracing::debug!("Configured initial failure for list_shards");

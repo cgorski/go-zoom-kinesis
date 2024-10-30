@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
+use crate::client::KinesisClientError;
 
 /// Trait for implementing record processing logic
 ///
@@ -254,15 +255,8 @@ where
     }
 
     /// Checks if an error indicates an expired iterator
-    fn is_iterator_expired(&self, error: &anyhow::Error) -> bool {
-        error
-            .downcast_ref::<SdkError<GetRecordsError>>()
-            .map_or(false, |sdk_error| {
-                matches!(
-                sdk_error,
-                SdkError::ServiceError(service_error) if service_error.err().is_expired_iterator_exception()
-            )
-            })
+    fn is_iterator_expired(&self, error: &KinesisClientError) -> bool {
+        matches!(error, KinesisClientError::ExpiredIterator)
     }
 }
 

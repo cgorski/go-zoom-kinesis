@@ -5,7 +5,7 @@ mod common;
 
 use common::{verify_processing_complete, TestContext};
 use go_zoom_kinesis::{CheckpointStore, KinesisProcessor};
-
+use go_zoom_kinesis::client::KinesisClientError;
 #[cfg(feature = "test-utils")]
 use go_zoom_kinesis::test::TestUtils;
 
@@ -181,7 +181,7 @@ async fn test_iterator_expiration_recovery() -> Result<()> {
         .mock_get_iterator(Ok("iterator-1".to_string()))
         .await;
     ctx.client
-        .mock_get_records(Err(anyhow::anyhow!("Iterator expired")))
+        .mock_get_records(Err(KinesisClientError::ExpiredIterator))
         .await;
 
     // Second attempt succeeds
