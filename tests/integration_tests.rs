@@ -1,9 +1,10 @@
-use anyhow::{ensure, Context};
-use go_zoom_kinesis::monitoring::{IteratorEventType, TestMonitoringHarness};
 use crate::common::TestContext;
 use crate::common::TestEventType;
 use anyhow::Result;
+use anyhow::{ensure, Context};
 use aws_sdk_kinesis::types::Record;
+use go_zoom_kinesis::client::KinesisClientError;
+use go_zoom_kinesis::monitoring::{IteratorEventType, TestMonitoringHarness};
 use go_zoom_kinesis::monitoring::{MonitoringConfig, ProcessingEventType};
 use go_zoom_kinesis::{store::InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig};
 use go_zoom_kinesis::{CheckpointStore, ProcessorError};
@@ -15,8 +16,6 @@ use tokio::time::Instant;
 use tracing::error;
 use tracing::warn;
 use tracing::{debug, info};
-use go_zoom_kinesis::client::KinesisClientError;
-
 
 mod common;
 
@@ -158,7 +157,7 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         .mock_get_records(Ok((vec![], Some("final-iterator".to_string()))))
         .await;
 
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (_tx, rx) = tokio::sync::watch::channel(false);
     let (processor, monitoring_rx) = KinesisProcessor::new(
         config,
         mock_processor.clone(),
@@ -166,7 +165,8 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         store.clone(),
     );
 
-    let mut harness = TestMonitoringHarness::new(monitoring_rx.expect("Monitoring should be enabled"));
+    let mut harness =
+        TestMonitoringHarness::new(monitoring_rx.expect("Monitoring should be enabled"));
     let processor_clone = mock_processor.clone();
     let store_clone = store.clone();
 
@@ -238,6 +238,7 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
 
             // Verify event ordering
             let history = harness.get_event_history().await;
+            #[allow(unused_assignments)]
             let mut saw_expired_before_renewed = false;
             let mut last_expired_idx = 0;
             let mut first_renewed_idx = usize::MAX;
@@ -542,7 +543,9 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
 
     // Configure initial failure
     ctx.client
-        .mock_list_shards(Err(KinesisClientError::Other("Temporary failure".to_string())))
+        .mock_list_shards(Err(KinesisClientError::Other(
+            "Temporary failure".to_string(),
+        )))
         .await;
     event_log.log(TestEventType::ShardListAttempt, None).await;
     tracing::debug!("Configured initial failure for list_shards");
@@ -641,6 +644,7 @@ async fn test_retry_shutdown_propagation() -> anyhow::Result<()> {
     Ok(())
 }
 #[tokio::test]
+#[allow(clippy::field_reassign_with_default)]
 async fn test_process_record_retry_behavior() -> anyhow::Result<()> {
     let mut config = ProcessorConfig::default();
     config.max_retries = Some(2); // Set explicit retry limit

@@ -238,6 +238,7 @@ mod tests {
         Ok(())
     }
     // Helper function to match event types
+    #[allow(clippy::match_like_matches_macro)]
     fn matches_event_type(
         event: &ProcessingEventType,
         expected_type: &str,

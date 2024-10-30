@@ -5,10 +5,10 @@ pub mod mocks;
 #[cfg(test)]
 use std::sync::Arc;
 
+#[allow(unused_imports)]
+use crate::client::KinesisClientError;
 use aws_sdk_kinesis::types::{Record, Shard};
 use std::time::Duration;
-use crate::client::KinesisClientError;
-
 /// Helper functions for creating test data
 pub struct TestUtils;
 
@@ -118,10 +118,10 @@ impl TestSetup {
             .mock_get_iterator(Ok("test-iterator".to_string()))
             .await;
 
-
-
         self.client
-            .mock_get_records(Err(KinesisClientError::Other("Simulated error".to_string())))
+            .mock_get_records(Err(KinesisClientError::Other(
+                "Simulated error".to_string(),
+            )))
             .await;
 
         Ok(())

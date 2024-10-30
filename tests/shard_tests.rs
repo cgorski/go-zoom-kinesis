@@ -4,10 +4,10 @@ use std::time::Duration;
 mod common;
 
 use common::{verify_processing_complete, TestContext};
-use go_zoom_kinesis::{CheckpointStore, KinesisProcessor};
 use go_zoom_kinesis::client::KinesisClientError;
 #[cfg(feature = "test-utils")]
 use go_zoom_kinesis::test::TestUtils;
+use go_zoom_kinesis::{CheckpointStore, KinesisProcessor};
 
 #[tokio::test]
 async fn test_multiple_shard_processing() -> Result<()> {

@@ -1,10 +1,10 @@
 //! Error types for the Kinesis processor
 
+use crate::client::KinesisClientError;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::AcquireError;
 use tokio::task::JoinError;
-use crate::client::KinesisClientError;
 
 /// Main error type for processor operations
 #[derive(Debug, Error)]
@@ -58,9 +58,7 @@ pub enum ProcessorError {
 impl From<KinesisClientError> for ProcessorError {
     fn from(err: KinesisClientError) -> Self {
         match err {
-            KinesisClientError::ExpiredIterator => {
-                ProcessorError::IteratorExpired("".to_string())
-            }
+            KinesisClientError::ExpiredIterator => ProcessorError::IteratorExpired("".to_string()),
             KinesisClientError::ThroughputExceeded => {
                 ProcessorError::ThrottlingError("Throughput exceeded".to_string())
             }
@@ -82,9 +80,7 @@ impl From<KinesisClientError> for ProcessorError {
             KinesisClientError::ConnectionError(msg) => {
                 ProcessorError::KinesisError(format!("Connection error: {}", msg))
             }
-            KinesisClientError::Other(msg) => {
-                ProcessorError::KinesisError(msg)
-            }
+            KinesisClientError::Other(msg) => ProcessorError::KinesisError(msg),
         }
     }
 }

@@ -11,16 +11,15 @@ use std::{
     time::Duration,
 };
 
+use crate::client::KinesisClientError;
 use anyhow::Result;
 use parking_lot;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::debug;
-use crate::client::KinesisClientError;
 
 /// Mock Kinesis client for testing
-
 
 #[derive(Debug, Default, Clone)]
 pub struct MockKinesisClient {
@@ -29,7 +28,8 @@ pub struct MockKinesisClient {
     #[allow(clippy::type_complexity)]
     get_iterator_responses: Arc<Mutex<VecDeque<Result<String, KinesisClientError>>>>,
     #[allow(clippy::type_complexity)]
-    get_records_responses: Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>), KinesisClientError>>>>,
+    get_records_responses:
+        Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>), KinesisClientError>>>>,
     iterator_request_count: Arc<AtomicUsize>,
 }
 
@@ -51,7 +51,8 @@ impl MockKinesisClient {
     }
 
     pub async fn mock_throughput_exceeded(&self) {
-        self.mock_error(KinesisClientError::ThroughputExceeded).await;
+        self.mock_error(KinesisClientError::ThroughputExceeded)
+            .await;
     }
     pub async fn mock_default_responses(&self) {
         self.get_records_responses
@@ -83,12 +84,6 @@ impl MockKinesisClient {
         response: Result<(Vec<Record>, Option<String>), KinesisClientError>,
     ) {
         self.get_records_responses.lock().await.push_back(response);
-    }
-
-
-    // Helper method to convert anyhow errors to KinesisClientError
-    fn convert_error<T>(result: anyhow::Result<T>) -> Result<T, KinesisClientError> {
-        result.map_err(|e| KinesisClientError::Other(e.to_string()))
     }
 }
 
@@ -155,7 +150,7 @@ impl KinesisClientTrait for MockKinesisClient {
                                 max_retries,
                                 shutdown,
                             )
-                                .await
+                            .await
                         }
                     }
                 }
@@ -704,7 +699,6 @@ mod tests {
         drop(tx);
         Ok(())
     }
-
 
     // Add separate test for iterator expiration
     #[tokio::test]

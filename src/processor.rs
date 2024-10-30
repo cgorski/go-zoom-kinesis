@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use tokio::time::Instant;
 
+use crate::client::KinesisClientError;
 use crate::error::ProcessingError;
 use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ShardEventType};
 use crate::{
@@ -27,7 +28,6 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
-use crate::client::KinesisClientError;
 
 /// Trait for implementing record processing logic
 ///
@@ -893,22 +893,25 @@ where
                     shard_id.to_string(),
                     IteratorEventType::Expired,
                     None,
-                )).await;
+                ))
+                .await;
 
                 // Get new iterator
                 let new_iterator = Self::get_initial_iterator(
                     ctx,
                     shard_id,
                     &state.last_successful_sequence,
-                    shutdown_rx
-                ).await?;
+                    shutdown_rx,
+                )
+                .await?;
 
                 // Send iterator renewed event
                 ctx.send_monitoring_event(ProcessingEvent::iterator(
                     shard_id.to_string(),
                     IteratorEventType::Renewed,
                     None,
-                )).await;
+                ))
+                .await;
 
                 Ok(BatchResult::Continue(new_iterator))
             }
@@ -917,22 +920,17 @@ where
                     return Ok(BatchResult::EndOfShard);
                 }
 
-                let batch_result = Self::process_records(
-                    ctx,
-                    shard_id,
-                    &records,
-                    state,
-                    shutdown_rx
-                ).await?;
+                let batch_result =
+                    Self::process_records(ctx, shard_id, &records, state, shutdown_rx).await?;
 
                 // Handle batch completion
                 if !batch_result.successful_records.is_empty() {
                     if let Some(last_sequence) = &batch_result.last_successful_sequence {
                         debug!(
-                        shard_id = %shard_id,
-                        sequence = %last_sequence,
-                        "Batch had successful records"
-                    );
+                            shard_id = %shard_id,
+                            sequence = %last_sequence,
+                            "Batch had successful records"
+                        );
                     }
                 }
 
@@ -942,7 +940,8 @@ where
                     batch_result.successful_records.len(),
                     batch_result.failed_records.len(),
                     batch_start.elapsed(),
-                )).await;
+                ))
+                .await;
 
                 // Continue processing with next iterator
                 match next_iterator {
@@ -956,7 +955,8 @@ where
                     shard_id.to_string(),
                     ShardEventType::Error,
                     Some(e.to_string()),
-                )).await;
+                ))
+                .await;
 
                 Err(e)
             }

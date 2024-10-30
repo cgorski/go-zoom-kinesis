@@ -19,8 +19,6 @@ pub struct MonitoringConfig {
     pub rate_limit: Option<u32>,
 }
 
-
-
 impl Default for MonitoringConfig {
     fn default() -> Self {
         Self {
@@ -242,7 +240,6 @@ pub struct TestMonitoringHarness {
     event_history: Arc<Mutex<Vec<ProcessingEvent>>>,
 }
 
-
 #[cfg(feature = "test-utils")]
 impl TestMonitoringHarness {
     pub fn new(monitoring_rx: mpsc::Receiver<ProcessingEvent>) -> Self {
@@ -294,25 +291,23 @@ impl TestMonitoringHarness {
         history.push(event.clone());
 
         match &event.event_type {
-            ProcessingEventType::Iterator { event_type, error } => {
-                match event_type {
-                    IteratorEventType::Expired => {
-                        events.insert("iterator_expired".to_string());
-                        if let Some(err) = error {
-                            events.insert(format!("iterator_error_{}", err));
-                        }
-                    }
-                    IteratorEventType::Renewed => {
-                        events.insert("iterator_renewed".to_string());
-                    }
-                    IteratorEventType::Failed => {
-                        events.insert("iterator_failed".to_string());
-                        if let Some(err) = error {
-                            events.insert(format!("iterator_failure_{}", err));
-                        }
+            ProcessingEventType::Iterator { event_type, error } => match event_type {
+                IteratorEventType::Expired => {
+                    events.insert("iterator_expired".to_string());
+                    if let Some(err) = error {
+                        events.insert(format!("iterator_error_{}", err));
                     }
                 }
-            }
+                IteratorEventType::Renewed => {
+                    events.insert("iterator_renewed".to_string());
+                }
+                IteratorEventType::Failed => {
+                    events.insert("iterator_failed".to_string());
+                    if let Some(err) = error {
+                        events.insert(format!("iterator_failure_{}", err));
+                    }
+                }
+            },
             ProcessingEventType::RecordAttempt {
                 sequence_number,
                 success,
@@ -323,7 +318,10 @@ impl TestMonitoringHarness {
             } => {
                 let status = if *success { "success" } else { "failure" };
                 events.insert(format!("record_attempt_{}_{}", sequence_number, status));
-                events.insert(format!("record_attempt_{}_try_{}", sequence_number, attempt_number));
+                events.insert(format!(
+                    "record_attempt_{}_try_{}",
+                    sequence_number, attempt_number
+                ));
 
                 if *is_final_attempt {
                     events.insert(format!("record_final_attempt_{}", sequence_number));
@@ -333,49 +331,62 @@ impl TestMonitoringHarness {
                     events.insert(format!("record_error_{}_{}", sequence_number, err));
                 }
             }
-            ProcessingEventType::RecordSuccess { sequence_number, checkpoint_success } => {
+            ProcessingEventType::RecordSuccess {
+                sequence_number,
+                checkpoint_success,
+            } => {
                 events.insert(format!("record_success_{}", sequence_number));
                 if *checkpoint_success {
                     events.insert(format!("checkpoint_success_{}", sequence_number));
                 }
             }
-            ProcessingEventType::RecordFailure { sequence_number, error } => {
+            ProcessingEventType::RecordFailure {
+                sequence_number,
+                error,
+            } => {
                 events.insert(format!("record_failure_{}", sequence_number));
-                events.insert(format!("record_failure_{}_error_{}", sequence_number, error));
+                events.insert(format!(
+                    "record_failure_{}_error_{}",
+                    sequence_number, error
+                ));
             }
             ProcessingEventType::BatchComplete {
                 successful_count,
                 failed_count,
                 ..
             } => {
-                events.insert(format!("batch_complete_{}_{}", successful_count, failed_count));
+                events.insert(format!(
+                    "batch_complete_{}_{}",
+                    successful_count, failed_count
+                ));
             }
-            ProcessingEventType::ShardEvent { event_type, details } => {
-                match event_type {
-                    ShardEventType::Started => {
-                        events.insert("shard_started".to_string());
-                    }
-                    ShardEventType::Completed => {
-                        events.insert("shard_completed".to_string());
-                    }
-                    ShardEventType::Error => {
-                        events.insert("shard_error".to_string());
-                        if let Some(detail) = details {
-                            events.insert(format!("shard_error_{}", detail));
-                        }
-                    }
-                    ShardEventType::Interrupted => {
-                        events.insert("shard_interrupted".to_string());
-                        if let Some(detail) = details {
-                            events.insert(format!("shard_interrupted_{}", detail));
-                        }
+            ProcessingEventType::ShardEvent {
+                event_type,
+                details,
+            } => match event_type {
+                ShardEventType::Started => {
+                    events.insert("shard_started".to_string());
+                }
+                ShardEventType::Completed => {
+                    events.insert("shard_completed".to_string());
+                }
+                ShardEventType::Error => {
+                    events.insert("shard_error".to_string());
+                    if let Some(detail) = details {
+                        events.insert(format!("shard_error_{}", detail));
                     }
                 }
-            }
+                ShardEventType::Interrupted => {
+                    events.insert("shard_interrupted".to_string());
+                    if let Some(detail) = details {
+                        events.insert(format!("shard_interrupted_{}", detail));
+                    }
+                }
+            },
             ProcessingEventType::Checkpoint {
                 sequence_number,
                 success,
-                error
+                error,
             } => {
                 let status = if *success { "success" } else { "failure" };
                 events.insert(format!("checkpoint_{}_{}", sequence_number, status));
@@ -383,9 +394,15 @@ impl TestMonitoringHarness {
                     events.insert(format!("checkpoint_error_{}_{}", sequence_number, err));
                 }
             }
-            ProcessingEventType::CheckpointFailure { sequence_number, error } => {
+            ProcessingEventType::CheckpointFailure {
+                sequence_number,
+                error,
+            } => {
                 events.insert(format!("checkpoint_failure_{}", sequence_number));
-                events.insert(format!("checkpoint_failure_{}_error_{}", sequence_number, error));
+                events.insert(format!(
+                    "checkpoint_failure_{}_error_{}",
+                    sequence_number, error
+                ));
             }
         }
 

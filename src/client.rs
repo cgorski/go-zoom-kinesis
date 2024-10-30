@@ -64,7 +64,6 @@ pub trait KinesisClientTrait: Send + Sync {
     ) -> Result<(Vec<Record>, Option<String>), KinesisClientError>;
 }
 
-
 #[cfg(feature = "test-utils")]
 pub trait KinesisClientTestExt: KinesisClientTrait {
     fn mock_list_shards(
@@ -134,9 +133,9 @@ impl KinesisClientTrait for Client {
         }
 
         match req.send().await {
-            Ok(response) => Ok(response
-                .shard_iterator
-                .ok_or_else(|| KinesisClientError::Other("No shard iterator returned".to_string()))?),
+            Ok(response) => Ok(response.shard_iterator.ok_or_else(|| {
+                KinesisClientError::Other("No shard iterator returned".to_string())
+            })?),
             Err(err) => {
                 warn!("Failed to get shard iterator: {:?}", err);
                 Err(KinesisClientError::Other(err.to_string()))
