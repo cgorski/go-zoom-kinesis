@@ -1,3 +1,5 @@
+use aws_sdk_kinesis::error::SdkError;
+use aws_sdk_kinesis::operation::get_records::GetRecordsError;
 use anyhow::Result;
 use async_trait::async_trait;
 use aws_sdk_kinesis::{
@@ -6,12 +8,44 @@ use aws_sdk_kinesis::{
 };
 use chrono::{DateTime, Utc};
 use std::time::{Duration, SystemTime};
+use thiserror::Error;
 use tracing::warn;
+#[derive(Debug, Error)]
+pub enum KinesisClientError {
+    #[error("Iterator expired")]
+    ExpiredIterator,
 
-#[async_trait]
+    #[error("Throughput exceeded")]
+    ThroughputExceeded,
+
+    #[error("Access denied")]
+    AccessDenied,
+
+    #[error("Invalid argument: {0}")]
+    InvalidArgument(String),
+
+    #[error("Resource not found: {0}")]
+    ResourceNotFound(String),
+
+    #[error("KMS error: {0}")]
+    KmsError(String),
+
+    #[error("Timeout error: {0}")]
+    Timeout(String),
+
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+#[async_trait::async_trait]
 pub trait KinesisClientTrait: Send + Sync {
-    async fn list_shards(&self, stream_name: &str) -> Result<Vec<Shard>>;
+    /// List all shards in the stream
+    async fn list_shards(&self, stream_name: &str) -> Result<Vec<Shard>, KinesisClientError>;
 
+    /// Get a shard iterator
     async fn get_shard_iterator(
         &self,
         stream_name: &str,
@@ -19,8 +53,9 @@ pub trait KinesisClientTrait: Send + Sync {
         iterator_type: ShardIteratorType,
         sequence_number: Option<&str>,
         timestamp: Option<&DateTime<Utc>>,
-    ) -> Result<String>;
+    ) -> Result<String, KinesisClientError>;
 
+    /// Get records from the stream
     async fn get_records(
         &self,
         iterator: &str,
@@ -28,8 +63,9 @@ pub trait KinesisClientTrait: Send + Sync {
         retry_count: u32,
         max_retries: Option<u32>,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<(Vec<Record>, Option<String>)>;
+    ) -> Result<(Vec<Record>, Option<String>), KinesisClientError>;
 }
+
 
 #[cfg(feature = "test-utils")]
 pub trait KinesisClientTestExt: KinesisClientTrait {
@@ -64,9 +100,14 @@ impl<T: KinesisClientTrait> KinesisClientTestExt for T {}
 
 #[async_trait]
 impl KinesisClientTrait for Client {
-    async fn list_shards(&self, stream_name: &str) -> Result<Vec<Shard>> {
-        let response = self.list_shards().stream_name(stream_name).send().await?;
-        Ok(response.shards.unwrap_or_default())
+    async fn list_shards(&self, stream_name: &str) -> Result<Vec<Shard>, KinesisClientError> {
+        match self.list_shards().stream_name(stream_name).send().await {
+            Ok(response) => Ok(response.shards.unwrap_or_default()),
+            Err(err) => {
+                warn!("Failed to list shards: {:?}", err);
+                Err(KinesisClientError::Other(err.to_string()))
+            }
+        }
     }
 
     async fn get_shard_iterator(
@@ -76,7 +117,7 @@ impl KinesisClientTrait for Client {
         iterator_type: ShardIteratorType,
         sequence_number: Option<&str>,
         timestamp: Option<&DateTime<Utc>>,
-    ) -> Result<String> {
+    ) -> Result<String, KinesisClientError> {
         let mut req = self
             .get_shard_iterator()
             .stream_name(stream_name)
@@ -89,14 +130,22 @@ impl KinesisClientTrait for Client {
 
         if let Some(ts) = timestamp {
             let ts: chrono::DateTime<Utc> = *ts;
-            let system_time: SystemTime = ts.into();
+            let system_time: std::time::SystemTime = ts.into();
             let smithy_dt = aws_smithy_types::DateTime::from(system_time);
             req = req.timestamp(smithy_dt);
         }
 
-        let response = req.send().await?;
-        Ok(response.shard_iterator.unwrap_or_default())
+        match req.send().await {
+            Ok(response) => Ok(response
+                .shard_iterator
+                .ok_or_else(|| KinesisClientError::Other("No shard iterator returned".to_string()))?),
+            Err(err) => {
+                warn!("Failed to get shard iterator: {:?}", err);
+                Err(KinesisClientError::Other(err.to_string()))
+            }
+        }
     }
+
     async fn get_records(
         &self,
         iterator: &str,
@@ -104,11 +153,12 @@ impl KinesisClientTrait for Client {
         retry_count: u32,
         max_retries: Option<u32>,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<(Vec<Record>, Option<String>)> {
+    ) -> Result<(Vec<Record>, Option<String>), KinesisClientError> {
         let mut current_retry = retry_count;
+
         loop {
             if *shutdown.borrow() {
-                return Err(anyhow::anyhow!("Shutdown requested"));
+                return Err(KinesisClientError::Other("Shutdown requested".to_string()));
             }
 
             match self
@@ -122,20 +172,40 @@ impl KinesisClientTrait for Client {
                     return Ok((
                         response.records().to_vec(),
                         response.next_shard_iterator().map(String::from),
-                    ));
+                    ))
                 }
-                Err(e) => {
-                    current_retry += 1;
-                    if current_retry > max_retries.unwrap_or(3) {
-                        return Err(e.into());
+                Err(err) => {
+                    if let Some(service_error) = err.as_service_error() {
+                        use aws_sdk_kinesis::operation::get_records::GetRecordsError;
+                        match service_error {
+                            GetRecordsError::ExpiredIteratorException(_) => {
+                                return Err(KinesisClientError::ExpiredIterator)
+                            }
+                            GetRecordsError::ProvisionedThroughputExceededException(_) => {
+                                if current_retry >= max_retries.unwrap_or(3) {
+                                    return Err(KinesisClientError::ThroughputExceeded);
+                                }
+                            }
+                            GetRecordsError::AccessDeniedException(_) => {
+                                return Err(KinesisClientError::AccessDenied)
+                            }
+                            _ => {
+                                if current_retry >= max_retries.unwrap_or(3) {
+                                    return Err(KinesisClientError::Other(format!(
+                                        "Service error: {}",
+                                        err
+                                    )));
+                                }
+                            }
+                        }
+                    } else {
+                        // Handle non-service errors
+                        if current_retry >= max_retries.unwrap_or(3) {
+                            return Err(KinesisClientError::Other(format!("SDK error: {}", err)));
+                        }
                     }
 
-                    warn!(
-                        error = %e,
-                        attempt = current_retry,
-                        "Temporary failure getting records, will retry"
-                    );
-
+                    current_retry += 1;
                     let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
                     tokio::time::sleep(delay).await;
                 }

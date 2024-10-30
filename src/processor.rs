@@ -8,7 +8,8 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
-
+use aws_sdk_kinesis::error::ProvideErrorMetadata;
+use aws_sdk_kinesis::operation::get_records::GetRecordsError;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use tokio::time::Instant;
@@ -24,6 +25,7 @@ use async_trait::async_trait;
 use aws_sdk_kinesis::types::{Record, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
+use aws_sdk_kinesis::error::SdkError;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
@@ -253,7 +255,14 @@ where
 
     /// Checks if an error indicates an expired iterator
     fn is_iterator_expired(&self, error: &anyhow::Error) -> bool {
-        error.to_string().contains("Iterator expired")
+        error
+            .downcast_ref::<SdkError<GetRecordsError>>()
+            .map_or(false, |sdk_error| {
+                matches!(
+                sdk_error,
+                SdkError::ServiceError(service_error) if service_error.err().is_expired_iterator_exception()
+            )
+            })
     }
 }
 

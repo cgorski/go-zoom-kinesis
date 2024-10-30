@@ -4,6 +4,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::AcquireError;
 use tokio::task::JoinError;
+use crate::client::KinesisClientError;
 
 /// Main error type for processor operations
 #[derive(Debug, Error)]
@@ -49,6 +50,40 @@ pub enum ProcessorError {
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+impl From<KinesisClientError> for ProcessorError {
+    fn from(err: KinesisClientError) -> Self {
+        match err {
+            KinesisClientError::ExpiredIterator => {
+                ProcessorError::IteratorExpired("".to_string())
+            }
+            KinesisClientError::ThroughputExceeded => {
+                ProcessorError::ThrottlingError("Throughput exceeded".to_string())
+            }
+            KinesisClientError::AccessDenied => {
+                ProcessorError::KinesisError("Access denied".to_string())
+            }
+            KinesisClientError::InvalidArgument(msg) => {
+                ProcessorError::KinesisError(format!("Invalid argument: {}", msg))
+            }
+            KinesisClientError::ResourceNotFound(msg) => {
+                ProcessorError::KinesisError(format!("Resource not found: {}", msg))
+            }
+            KinesisClientError::KmsError(msg) => {
+                ProcessorError::KinesisError(format!("KMS error: {}", msg))
+            }
+            KinesisClientError::Timeout(msg) => {
+                ProcessorError::KinesisError(format!("Timeout: {}", msg))
+            }
+            KinesisClientError::ConnectionError(msg) => {
+                ProcessorError::KinesisError(format!("Connection error: {}", msg))
+            }
+            KinesisClientError::Other(msg) => {
+                ProcessorError::KinesisError(msg)
+            }
+        }
+    }
 }
 
 impl From<tokio::sync::mpsc::error::SendError<()>> for ProcessorError {
