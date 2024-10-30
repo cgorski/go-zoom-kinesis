@@ -1,7 +1,7 @@
 //! Retry and backoff functionality for the Kinesis processor
 
-mod backoff;
-mod error;
+pub mod backoff;
+pub mod error;
 
 pub use backoff::{Backoff, ExponentialBackoff};
 pub use error::RetryError;
@@ -26,7 +26,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: Some(3),
+            max_retries: None, // Infinite retries
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(30),
             jitter_factor: 0.1,
