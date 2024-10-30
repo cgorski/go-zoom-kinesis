@@ -1,6 +1,6 @@
 [package]
 name = "go-zoom-kinesis"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 authors = ["Chris A. Gorski <cgorski@cgorski.org>"]
 description = "A robust AWS Kinesis stream processor with checkpointing and retry capabilities"
