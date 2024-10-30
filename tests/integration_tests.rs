@@ -1,3 +1,4 @@
+use go_zoom_kinesis::monitoring::{IteratorEventType, TestMonitoringHarness};
 use crate::common::TestContext;
 use crate::common::TestEventType;
 use anyhow::Result;
@@ -14,6 +15,7 @@ use tracing::error;
 use tracing::warn;
 use tracing::{debug, info};
 use go_zoom_kinesis::client::KinesisClientError;
+
 
 mod common;
 
@@ -100,9 +102,9 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
     init_logging();
     info!("Starting shard iterator expiry test");
 
+    // Setup configuration
     let mut config = common::create_test_config();
     config.max_retries = Some(2);
-    // Enable monitoring
     config.monitoring = MonitoringConfig {
         enabled: true,
         channel_size: 1000,
@@ -111,6 +113,7 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         rate_limit: None,
     };
 
+    // Create mocks
     let client = MockKinesisClient::new();
     let mock_processor = MockRecordProcessor::new();
     let store = MockCheckpointStore::new();
@@ -161,46 +164,28 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
         store.clone(),
     );
 
-    let mut monitoring_rx = monitoring_rx.expect("Monitoring should be enabled");
+    let mut harness = TestMonitoringHarness::new(monitoring_rx.expect("Monitoring should be enabled"));
     let processor_clone = mock_processor.clone();
     let store_clone = store.clone();
 
-    // Use select! to handle multiple concurrent events
     tokio::select! {
         processor_result = processor.run(rx) => {
-            // Handle normal completion
-            processor_result?;
-        }
-
-        _ = async {
-            let mut saw_expired_iterator = false;
-            let mut saw_successful_processing = false;
-
-            while let Some(event) = monitoring_rx.recv().await {
-                match &event.event_type {
-                    ProcessingEventType::Iterator { event_type, error } => {
-                        if let Some(err) = error {
-                            if err.contains("expired") {
-                                debug!("Detected iterator expiration");
-                                saw_expired_iterator = true;
-                            }
-                        }
-                    }
-                    ProcessingEventType::RecordSuccess { sequence_number, .. } => {
-                        if sequence_number == "test-sequence-101" {
-                            debug!("Detected successful record processing");
-                            saw_successful_processing = true;
-                        }
-                    }
-                    _ => {}
-                }
-
-                // If we've seen both events, we can complete the test
-                if saw_expired_iterator && saw_successful_processing {
-                    debug!("Test conditions met");
-                    break;
+            // Don't immediately propagate completion
+            if let Err(e) = processor_result {
+                if !matches!(e, ProcessorError::Shutdown) {
+                    return Err(e);
                 }
             }
+        }
+
+        harness_result = harness.wait_for_events(&[
+            "iterator_expired",
+            "iterator_renewed",
+            "record_success_test-sequence-101",
+            "checkpoint_success_test-sequence-101",
+            "shard_completed"
+        ]) => {
+            harness_result?;
 
             // Verify processing results
             let process_count = processor_clone.get_process_count().await;
@@ -227,17 +212,38 @@ async fn test_shard_iterator_expiry() -> anyhow::Result<()> {
                 "Checkpoint not saved correctly"
             );
 
+            // Additional verification of event sequence
+            let history = harness.get_event_history().await;
+            let mut saw_expired_before_renewed = false;
+            let mut last_expired_idx = 0;
+            let mut first_renewed_idx = usize::MAX;
+
+            for (idx, event) in history.iter().enumerate() {
+                match &event.event_type {
+                    ProcessingEventType::Iterator { event_type: IteratorEventType::Expired, .. } => {
+                        last_expired_idx = idx;
+                    }
+                    ProcessingEventType::Iterator { event_type: IteratorEventType::Renewed, .. } => {
+                        if first_renewed_idx == usize::MAX {
+                            first_renewed_idx = idx;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            saw_expired_before_renewed = last_expired_idx < first_renewed_idx;
+            assert!(
+                saw_expired_before_renewed,
+                "Iterator expiration should occur before renewal"
+            );
+
             // Signal completion
             tx.send(true)?;
-            Ok::<_, anyhow::Error>(())
-        } => {
-            debug!("Monitoring completed successfully");
         }
 
-        // Add timeout
         _ = tokio::time::sleep(Duration::from_secs(5)) => {
-            warn!("Test timed out");
-            tx.send(true)?;
+            harness.dump_history().await;
             anyhow::bail!("Test timed out waiting for processing to complete");
         }
     }

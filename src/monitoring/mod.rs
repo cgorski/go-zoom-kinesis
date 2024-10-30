@@ -11,4 +11,7 @@ pub use types::{
     IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType, ShardEventType,
 };
 
+
+#[cfg(feature = "test-utils")]
+pub use types::{TestMonitoringHarness};
 // Re-export internal types needed by the processor
