@@ -26,28 +26,33 @@ A robust, production-ready AWS Kinesis stream processor with checkpointing and r
 ```rust
 use go_zoom_kinesis::{
     KinesisProcessor, ProcessorConfig, RecordProcessor,
+    processor::RecordMetadata,
     store::InMemoryCheckpointStore,
     InitialPosition,
     monitoring::MonitoringConfig,
+    error::{ProcessorError, ProcessingError},
 };
 use aws_sdk_kinesis::{Client, types::Record};
 use std::time::Duration;
 use async_trait::async_trait;
-use anyhow::Result;
 
 #[derive(Clone)]
 struct MyProcessor;
 
 #[async_trait]
 impl RecordProcessor for MyProcessor {
-    async fn process_record(&self, record: &Record) -> Result<()> {
+    async fn process_record<'a>(
+        &self,
+        record: &'a Record,
+        metadata: RecordMetadata<'a>,
+    ) -> Result<(), ProcessingError> {
         println!("Processing record: {:?}", record);
         Ok(())
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), ProcessorError> {
     // Configure AWS client
     let config = aws_config::load_from_env().await;
     let client = Client::new(&config);
@@ -71,19 +76,18 @@ async fn main() -> Result<()> {
 
     // Initialize processor components
     let processor = MyProcessor;
-    let checkpoint_store = InMemoryCheckpointStore::new();
+    let store = InMemoryCheckpointStore::new();
 
-    // Create and run the processor
+    // Create and run processor
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let (processor, monitoring_rx) = KinesisProcessor::new(
+    let (processor, _monitoring_rx) = KinesisProcessor::new(
         config,
         processor,
         client,
-        checkpoint_store,
+        store,
     );
 
-    processor.run(shutdown_rx).await?;
-    Ok(())
+    processor.run(shutdown_rx).await
 }
 ```
 
@@ -128,11 +132,11 @@ Utc::now() - chrono::Duration::hours(1)
 ### DynamoDB Checkpoint Store Example ###
 
 ```rust
-use go_zoom_kinesis::store::DynamoDbCheckpointStore;
-use anyhow::Result;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+use go_zoom_kinesis::store::DynamoDbCheckpointStore;
+
+
+async fn example() -> anyhow::Result<()> {
     let config = aws_config::load_from_env().await;
     let dynamo_client = aws_sdk_dynamodb::Client::new(&config);
     let checkpoint_store = DynamoDbCheckpointStore::new(
@@ -140,8 +144,6 @@ async fn main() -> Result<()> {
         "checkpoints-table".to_string(),
         "my-app-".to_string(),
     );
-    
-    // Use checkpoint_store with KinesisProcessor...
     Ok(())
 }
 ```
@@ -149,7 +151,8 @@ async fn main() -> Result<()> {
 ### Custom Error Handling 📨
 
 ```rust
-use go_zoom_kinesis::{ProcessorError, RecordProcessor};
+use go_zoom_kinesis::{RecordProcessor, error::ProcessingError};
+use go_zoom_kinesis::processor::RecordMetadata;
 use aws_sdk_kinesis::types::Record;
 use async_trait::async_trait;
 use anyhow::Result;
@@ -158,19 +161,28 @@ struct MyProcessor;
 
 #[async_trait]
 impl RecordProcessor for MyProcessor {
-    async fn process_record(&self, record: &Record) -> Result<()> {
+    async fn process_record<'a>(
+        &self,
+        record: &'a Record,
+        metadata: RecordMetadata<'a>,
+    ) -> Result<(), ProcessingError> {
         match process_data(record).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                // Custom error handling
-                tracing::error!(error = %e, "Failed to process record");
-                Err(anyhow::anyhow!("Processing failed: {}", e))
+                // Custom error handling with metadata context
+                tracing::error!(
+                    error = %e,
+                    shard_id = %metadata.shard_id(),
+                    attempt = %metadata.attempt_number(),
+                    "Failed to process record"
+                );
+                Err(ProcessingError::soft(e)) // Will be retried
             }
         }
     }
 }
 
-// For the example to compile
+// Example processing function
 async fn process_data(_record: &Record) -> Result<()> {
     Ok(())
 }
@@ -214,28 +226,36 @@ This enables scenarios like:
 ### Common Configuration Scenarios
 
 ```rust
-// Development Configuration
-let dev_config = ProcessorConfig {
-    stream_name: "dev-stream".to_string(),
-    initial_position: InitialPosition::TrimHorizon,
-    prefer_stored_checkpoint: false,  // Always start from beginning
-    ..Default::default()
+use go_zoom_kinesis::{ProcessorConfig, InitialPosition};
+use chrono::{DateTime, Utc};
+
+// Start from oldest available record
+let config = ProcessorConfig {
+initial_position: InitialPosition::TrimHorizon,
+prefer_stored_checkpoint: true,  // Will check checkpoint store first
+..Default::default()
 };
 
-// Production Configuration
-let prod_config = ProcessorConfig {
-    stream_name: "prod-stream".to_string(),
-    initial_position: InitialPosition::Latest,
-    prefer_stored_checkpoint: true,  // Resume from checkpoint if available
-    ..Default::default()
+// Start from tip of the stream
+let config = ProcessorConfig {
+initial_position: InitialPosition::Latest,
+..Default::default()
 };
 
-// Batch Processing Configuration
-let batch_config = ProcessorConfig {
-    stream_name: "batch-stream".to_string(),
-    initial_position: InitialPosition::AtTimestamp(batch_start_time),
-    prefer_stored_checkpoint: false,  // Start exactly at specified time
-    ..Default::default()
+// Start from specific sequence number
+let config = ProcessorConfig {
+initial_position: InitialPosition::AtSequenceNumber(
+"49579292999999999999999999".to_string()
+),
+..Default::default()
+};
+
+// Start from specific timestamp
+let config = ProcessorConfig {
+initial_position: InitialPosition::AtTimestamp(
+Utc::now() - chrono::Duration::hours(1)
+),
+..Default::default()
 };
 ```
 

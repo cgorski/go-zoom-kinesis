@@ -1,3 +1,4 @@
+use crate::processor::RecordMetadata;
 use crate::{
     client::KinesisClientTrait, error::ProcessingError, processor::RecordProcessor, retry::Backoff,
     store::CheckpointStore, ProcessorConfig,
@@ -423,7 +424,11 @@ impl MockRecordProcessor {
 
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {
-    async fn process_record(&self, record: &Record) -> std::result::Result<(), ProcessingError> {
+    async fn process_record<'a>(
+        &self,
+        record: &'a Record,
+        _metadata: RecordMetadata<'a>, // Just ignore the metadata parameter
+    ) -> std::result::Result<(), ProcessingError> {
         let start_time = Instant::now();
 
         // Check for configured delay
@@ -483,7 +488,7 @@ impl RecordProcessor for MockRecordProcessor {
                     return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
-                    if current_attempts < max_attempts as usize {
+                    if !is_final {
                         let error = format!("Simulated soft failure for sequence {}", sequence);
                         self.record_attempt(
                             &sequence,
@@ -494,7 +499,7 @@ impl RecordProcessor for MockRecordProcessor {
                         )
                         .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
-                    } else if is_final {
+                    } else {
                         let error = format!(
                             "Final soft failure for sequence {} after {} attempts",
                             sequence, current_attempts
@@ -738,8 +743,15 @@ mod tests {
             .build()
             .expect("Failed to build record");
 
+        // Create metadata for the test
+        let metadata = RecordMetadata::new(
+            &record,
+            "test-shard-1".to_string(),
+            1, // first attempt
+        );
+
         // Test failure handling
-        let result = processor.process_record(&record).await;
+        let result = processor.process_record(&record, metadata).await;
         assert!(matches!(result, Err(ProcessingError::HardFailure(_))));
         assert_eq!(processor.get_failure_attempts("test-seq").await, 1);
 

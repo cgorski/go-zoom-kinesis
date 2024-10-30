@@ -8,6 +8,7 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
+use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use tokio::time::Instant;
@@ -32,14 +33,17 @@ use tracing::{error, info, trace, warn};
 /// Trait for implementing record processing logic
 ///
 /// Implementors should handle the business logic for processing individual records
-/// and indicate success/failure through the return type.
+/// and indicate success/failure through the return type. Additional context about
+/// the record and its processing state is provided through the metadata parameter.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use go_zoom_kinesis::{RecordProcessor};
+/// use go_zoom_kinesis::processor::RecordMetadata;
 /// use go_zoom_kinesis::error::ProcessingError;
 /// use aws_sdk_kinesis::types::Record;
+/// use tracing::warn;
 ///
 /// // Example data processing function
 /// async fn process_data(data: &[u8]) -> anyhow::Result<()> {
@@ -52,17 +56,61 @@ use tracing::{error, info, trace, warn};
 ///
 /// #[async_trait::async_trait]
 /// impl RecordProcessor for MyProcessor {
-///     async fn process_record(&self, record: &Record) -> std::result::Result<(), ProcessingError> {
+///     async fn process_record<'a>(
+///         &self,
+///         record: &'a Record,
+///         metadata: RecordMetadata<'a>,
+///     ) -> std::result::Result<(), ProcessingError> {
+///         // Log retry attempts
+///         if metadata.attempt_number() > 1 {
+///             warn!(
+///                 shard_id = %metadata.shard_id(),
+///                 sequence = %metadata.sequence_number(),
+///                 attempt = metadata.attempt_number(),
+///                 "Retrying record processing"
+///             );
+///         }
+///
 ///         // Process record data
 ///         let data = record.data().as_ref();
 ///
 ///         match process_data(data).await {
 ///             Ok(_) => Ok(()),
-///             Err(e) => Err(ProcessingError::soft(e)) // Will be retried
+///             Err(e) => {
+///                 // Use metadata for detailed error context
+///                 warn!(
+///                     shard_id = %metadata.shard_id(),
+///                     sequence = %metadata.sequence_number(),
+///                     attempt = metadata.attempt_number(),
+///                     error = %e,
+///                     "Processing failed"
+///                 );
+///                 Err(ProcessingError::soft(e)) // Will be retried
+///             }
 ///         }
 ///     }
 /// }
 /// ```
+///
+/// # Metadata Access
+///
+/// The `metadata` parameter provides access to:
+/// * `shard_id()` - ID of the shard this record came from
+/// * `sequence_number()` - Sequence number of the record
+/// * `approximate_arrival_timestamp()` - When the record arrived in Kinesis
+/// * `partition_key()` - Partition key used for the record
+/// * `explicit_hash_key()` - Optional explicit hash key
+/// * `attempt_number()` - Current processing attempt number (starts at 1)
+///
+/// # Error Handling
+///
+/// Return values indicate:
+/// * `Ok(())` - Processing succeeded
+/// * `Err(ProcessingError::SoftFailure)` - Temporary failure, will be retried
+/// * `Err(ProcessingError::HardFailure)` - Permanent failure, will not be retried
+///
+/// The processor will automatically handle retries for soft failures up to the
+/// configured maximum retry count.
 #[async_trait]
 pub trait RecordProcessor: Send + Sync {
     /// Process a single record from the Kinesis stream
@@ -70,13 +118,110 @@ pub trait RecordProcessor: Send + Sync {
     /// # Arguments
     ///
     /// * `record` - The Kinesis record to process
+    /// * `metadata` - Additional context about the record and processing attempt
     ///
     /// # Returns
     ///
     /// * `Ok(())` if processing succeeded
     /// * `Err(ProcessingError::SoftFailure)` for retriable errors
     /// * `Err(ProcessingError::HardFailure)` for permanent failures
-    async fn process_record(&self, record: &Record) -> std::result::Result<(), ProcessingError>;
+    async fn process_record<'a>(
+        &self,
+        record: &'a Record,
+        metadata: RecordMetadata<'a>,
+    ) -> std::result::Result<(), ProcessingError>;
+}
+
+/// Metadata associated with a Kinesis record during processing
+///
+/// This struct provides access to record metadata through reference-based accessors,
+/// avoiding unnecessary data copying while maintaining access to processing context
+/// such as shard ID and attempt count.
+///
+/// # Examples
+///
+/// ```rust
+/// use go_zoom_kinesis::processor::RecordMetadata;
+/// use aws_sdk_kinesis::types::Record;
+///
+/// fn process_with_metadata(metadata: &RecordMetadata) {
+///     println!("Processing record {} from shard {}",
+///         metadata.sequence_number(),
+///         metadata.shard_id()
+///     );
+///
+///     if metadata.attempt_number() > 1 {
+///         println!("Retry attempt {}", metadata.attempt_number());
+///     }
+///
+///     if let Some(timestamp) = metadata.approximate_arrival_timestamp() {
+///         println!("Record arrived at: {}", timestamp);
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct RecordMetadata<'a> {
+    /// Reference to the underlying Kinesis record
+    record: &'a Record,
+    /// ID of the shard this record came from
+    shard_id: String,
+    /// Number of processing attempts for this record (starts at 1)
+    attempt_number: u32,
+}
+
+impl<'a> RecordMetadata<'a> {
+    /// Creates a new metadata instance for a record
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - Reference to the Kinesis record
+    /// * `shard_id` - ID of the shard this record came from
+    /// * `attempt_number` - Current processing attempt number (starts at 1)
+    pub fn new(record: &'a Record, shard_id: String, attempt_number: u32) -> Self {
+        Self {
+            record,
+            shard_id,
+            attempt_number,
+        }
+    }
+
+    /// Gets the sequence number of the record
+    ///
+    /// This is a unique identifier for the record within its shard.
+    pub fn sequence_number(&self) -> &str {
+        self.record.sequence_number()
+    }
+
+    /// Gets the approximate time when the record was inserted into the stream
+    ///
+    /// Returns `None` if the timestamp is not available or cannot be converted
+    /// to the chrono timestamp format.
+    pub fn approximate_arrival_timestamp(&self) -> Option<DateTime<Utc>> {
+        self.record
+            .approximate_arrival_timestamp()
+            .and_then(|ts| ts.to_chrono_utc().ok())
+    }
+
+    /// Gets the partition key of the record
+    ///
+    /// The partition key is used to determine which shard in the stream
+    /// the record belongs to.
+    pub fn partition_key(&self) -> &str {
+        self.record.partition_key()
+    }
+
+    /// Gets the ID of the shard this record came from
+    pub fn shard_id(&self) -> &str {
+        &self.shard_id
+    }
+
+    /// Gets the current processing attempt number
+    ///
+    /// This starts at 1 for the first attempt and increments
+    /// for each retry.
+    pub fn attempt_number(&self) -> u32 {
+        self.attempt_number
+    }
 }
 
 /// Specifies where to start reading from in the stream
@@ -425,6 +570,18 @@ where
     /// # Returns
     ///
     /// Returns true if processing succeeded, false if failed after retries
+    /// Process a record with retries and monitoring
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Processing context
+    /// * `record` - The record to process
+    /// * `shard_id` - ID of the shard being processed
+    /// * `shutdown_rx` - Channel receiver for shutdown signals
+    ///
+    /// # Returns
+    ///
+    /// Returns true if processing succeeded, false if failed after retries
     async fn process_record_with_retries(
         ctx: &ProcessingContext<P, C, S>,
         record: &Record,
@@ -441,8 +598,10 @@ where
             let is_final_attempt = attempt > max_retries;
             let record_start = Instant::now();
 
+            let metadata = RecordMetadata::new(record, shard_id.to_string(), attempt);
+
             tokio::select! {
-                process_result = ctx.processor.process_record(record) => {
+                process_result = ctx.processor.process_record(record, metadata) => {
                     match process_result {
                         Ok(_) => {
                             // Emit successful attempt event
@@ -624,7 +783,6 @@ where
             }
         }
     }
-
     /// Process all shards in the stream
     async fn process_stream(
         &self,
@@ -1161,6 +1319,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use tracing_subscriber::EnvFilter;
+    use crate::InMemoryCheckpointStore;
 
     // Add this static for one-time initialization
     static INIT: Once = Once::new();
@@ -1511,4 +1670,207 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_metadata_basic() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        // Setup single record processing
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        let test_record = TestUtils::create_test_record("seq-1", b"test-data");
+        client
+            .mock_get_records(Ok((vec![test_record], None)))
+            .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store,
+        );
+
+        // Run processor briefly
+        let processor_handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        processor_handle.await??;
+
+        // Verify processed record count
+        assert_eq!(processor.get_process_count().await, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_retry_counting() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            max_retries: Some(2),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        // Configure processor to fail twice then succeed
+        processor
+            .set_failure_sequence("seq-1".to_string(), "soft".to_string(), 3)
+            .await;
+
+        // Setup test record
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        let test_record = TestUtils::create_test_record("seq-1", b"test-data");
+        client
+            .mock_get_records(Ok((vec![test_record], None)))
+            .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store,
+        );
+
+        // Run processor
+        let processor_handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        processor_handle.await??;
+
+        // Verify attempt counts
+        assert_eq!(processor.get_failure_attempts("seq-1").await, 3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_shard_id() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        // Setup test with specific shard ID
+        let test_shard_id = "test-shard-123";
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard(test_shard_id)]))
+            .await;
+
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        let test_record = TestUtils::create_test_record("seq-1", b"test-data");
+        client
+            .mock_get_records(Ok((vec![test_record], None)))
+            .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store,
+        );
+
+        // Run processor
+        let processor_handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        processor_handle.await??;
+
+        // Verify shard ID was correct
+        assert_eq!(processor.get_process_count().await, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_metadata_sequence_numbers() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        // Setup multiple records with specific sequence numbers
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        let records = vec![
+            TestUtils::create_test_record("seq-1", b"data1"),
+            TestUtils::create_test_record("seq-2", b"data2"),
+        ];
+        client
+            .mock_get_records(Ok((records, None)))
+            .await;
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store,
+        );
+
+        // Run processor
+        let processor_handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        processor_handle.await??;
+
+        // Verify all records were processed
+        assert_eq!(processor.get_process_count().await, 2);
+
+        Ok(())
+    }
+
 }
