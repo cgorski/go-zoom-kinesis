@@ -8,8 +8,6 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
-use aws_sdk_kinesis::error::ProvideErrorMetadata;
-use aws_sdk_kinesis::operation::get_records::GetRecordsError;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use tokio::time::Instant;
@@ -25,7 +23,6 @@ use async_trait::async_trait;
 use aws_sdk_kinesis::types::{Record, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
-use aws_sdk_kinesis::error::SdkError;
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;

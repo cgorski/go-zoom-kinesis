@@ -1,5 +1,3 @@
-use aws_sdk_kinesis::error::SdkError;
-use aws_sdk_kinesis::operation::get_records::GetRecordsError;
 use anyhow::Result;
 use async_trait::async_trait;
 use aws_sdk_kinesis::{
@@ -7,7 +5,7 @@ use aws_sdk_kinesis::{
     Client,
 };
 use chrono::{DateTime, Utc};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use thiserror::Error;
 use tracing::warn;
 #[derive(Debug, Error)]
