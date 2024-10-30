@@ -1318,8 +1318,8 @@ mod tests {
     use std::sync::Once;
     use tokio::sync::Mutex;
 
-    use tracing_subscriber::EnvFilter;
     use crate::InMemoryCheckpointStore;
+    use tracing_subscriber::EnvFilter;
 
     // Add this static for one-time initialization
     static INIT: Once = Once::new();
@@ -1692,25 +1692,19 @@ mod tests {
             .await;
 
         let test_record = TestUtils::create_test_record("seq-1", b"test-data");
-        client
-            .mock_get_records(Ok((vec![test_record], None)))
-            .await;
+        client.mock_get_records(Ok((vec![test_record], None))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store,
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor briefly
-        let processor_handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        tx.send(true).map_err(|e| {
+            ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e))
+        })?;
         processor_handle.await??;
 
         // Verify processed record count
@@ -1746,25 +1740,19 @@ mod tests {
             .await;
 
         let test_record = TestUtils::create_test_record("seq-1", b"test-data");
-        client
-            .mock_get_records(Ok((vec![test_record], None)))
-            .await;
+        client.mock_get_records(Ok((vec![test_record], None))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store,
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor
-        let processor_handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         tokio::time::sleep(Duration::from_millis(500)).await;
-        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        tx.send(true).map_err(|e| {
+            ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e))
+        })?;
         processor_handle.await??;
 
         // Verify attempt counts
@@ -1795,25 +1783,19 @@ mod tests {
             .await;
 
         let test_record = TestUtils::create_test_record("seq-1", b"test-data");
-        client
-            .mock_get_records(Ok((vec![test_record], None)))
-            .await;
+        client.mock_get_records(Ok((vec![test_record], None))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store,
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor
-        let processor_handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        tx.send(true).map_err(|e| {
+            ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e))
+        })?;
         processor_handle.await??;
 
         // Verify shard ID was correct
@@ -1846,25 +1828,19 @@ mod tests {
             TestUtils::create_test_record("seq-1", b"data1"),
             TestUtils::create_test_record("seq-2", b"data2"),
         ];
-        client
-            .mock_get_records(Ok((records, None)))
-            .await;
+        client.mock_get_records(Ok((records, None))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store,
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor
-        let processor_handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e)))?;
+        tx.send(true).map_err(|e| {
+            ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e))
+        })?;
         processor_handle.await??;
 
         // Verify all records were processed
@@ -1872,5 +1848,4 @@ mod tests {
 
         Ok(())
     }
-
 }
