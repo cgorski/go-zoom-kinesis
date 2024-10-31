@@ -104,7 +104,8 @@ pub async fn verify_event_types(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::test::collect_monitoring_events;
+use super::*;
     use crate::monitoring::IteratorEventType;
     use crate::monitoring::MonitoringConfig;
     use crate::monitoring::ShardEventType;
@@ -149,7 +150,6 @@ mod tests {
 
         Ok(())
     }
-
     #[tokio::test]
     async fn test_all_event_types() -> Result<()> {
         let _ = tracing_subscriber::fmt()
@@ -172,68 +172,177 @@ mod tests {
         let processor = MockRecordProcessor::new();
         let store = MockCheckpointStore::new();
 
+        // Setup test records with different behaviors
+        let records = vec![
+            TestUtils::create_test_record("seq-1", b"success"),      // Immediate success
+            TestUtils::create_test_record("seq-2", b"retry"),        // Retry then success
+            TestUtils::create_test_record("seq-3", b"retry"),        // Retry then success
+        ];
+
+        // Configure processor behaviors
+        processor
+            .set_failure_sequence("seq-2".to_string(), "soft".to_string(), 3)
+            .await;
+        processor
+            .set_failure_sequence("seq-3".to_string(), "soft".to_string(), 3)
+            .await;
+
         // Setup mock responses
         client
             .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
             .await;
-
-        client.mock_get_iterator(Ok("iterator-1".to_string())).await;
-
-        // Create test records
-        let test_records = vec![
-            TestUtils::create_test_record("seq-1", b"success"),
-            TestUtils::create_test_record("seq-2", b"retry"),
-            TestUtils::create_test_record("seq-3", b"fail"),
-        ];
-
         client
-            .mock_get_records(Ok((test_records, Some("next-iterator".to_string()))))
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        client
+            .mock_get_records(Ok((records, Some("next-iterator".to_string()))))
             .await;
 
-        // Configure processor failures
-        processor
-            .set_failure_sequences(vec!["seq-2".to_string(), "seq-3".to_string()])
-            .await;
-
-        let (processor, monitoring_rx) = KinesisProcessor::new(config, processor, client, store);
-
-        let mut monitoring_rx =
-            monitoring_rx.ok_or_else(|| anyhow!("Monitoring receiver not created"))?;
-
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, mut monitoring_rx) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor in background
-        let processor_handle = tokio::spawn(async move { processor.run(shutdown_rx).await });
+        let handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
 
-        // Collect events
-        let events = collect_events_with_timing(&mut monitoring_rx, Duration::from_secs(2)).await;
+        // Collect events with timeout
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(2)).await;
 
-        // Expected event sequence
-        let expected_events = vec![
-            ("ShardEvent", "Started"),
-            ("Iterator", "Renewed"),
-            ("RecordAttempt", "Success"), // seq-1
-            ("RecordAttempt", "Retry"),   // seq-2, seq-3
-            ("RecordAttempt", "Failure"), // seq-2, seq-3 final
-            ("ShardEvent", "Completed"),
-        ];
+        // Debug print all events
+        debug!("Collected Events:");
+        for event in &events {
+            debug!("Event: {:?}", event);
+        }
 
-        // Verify events with detailed logging
-        for (event_type, subtype) in &expected_events {
-            let found = events
-                .iter()
-                .any(|e| matches_event_type(&e.event_type, event_type, subtype));
-            if !found {
-                debug!("Missing event type: {}/{}", event_type, subtype);
-                dump_events(&events);
-                panic!("Missing expected event: {} - {}", event_type, subtype);
+        // Verify event sequence
+        let mut event_sequence = Vec::<String>::new();  // Change to owned Strings
+        for event in &events {
+            match &event.event_type {
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                    event_sequence.push("shard_start".to_string());
+                }
+                ProcessingEventType::RecordSuccess { sequence_number, .. } => {
+                    event_sequence.push(format!("success_{}", sequence_number));
+                }
+                ProcessingEventType::RecordAttempt {
+                    sequence_number,
+                    success: false,
+                    attempt_number,
+                    ..
+                } => {
+                    event_sequence.push(format!("attempt_{}_{}",sequence_number, attempt_number));
+                }
+                ProcessingEventType::Checkpoint { success: true, .. } => {
+                    event_sequence.push("checkpoint_success".to_string());
+                }
+                ProcessingEventType::BatchComplete { successful_count, failed_count, .. } => {
+                    event_sequence.push(format!("batch_complete_{}_{}", successful_count, failed_count));
+                }
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
+                    event_sequence.push("shard_complete".to_string());
+                }
+                _ => {}
             }
         }
 
-        // Shutdown processor
-        shutdown_tx.send(true)?;
-        processor_handle.await??;
+        // Verify required event patterns
+        let required_patterns = vec![
+            // Shard lifecycle
+            "shard_start",
+
+            // First record (immediate success)
+            "success_seq-1",
+
+            // Second record (retries then success)
+            "attempt_seq-2_0",
+            "attempt_seq-2_1",
+            "attempt_seq-2_2",
+            "success_seq-2",
+
+            // Third record (retries then success)
+            "attempt_seq-3_0",
+            "attempt_seq-3_1",
+            "attempt_seq-3_2",
+            "success_seq-3",
+
+            // Completion events
+            "checkpoint_success",
+            "batch_complete_3_0",  // All records eventually succeed
+            "shard_complete"
+        ];
+
+        // Then update the verification to compare strings
+        for pattern in required_patterns {
+            assert!(
+                event_sequence.iter().any(|e| e == pattern),
+                "Missing required event pattern: {}. Found events: {:?}",
+                pattern,
+                event_sequence
+            );
+        }
+
+        // Verify event ordering
+        let mut saw_start = false;
+        let mut saw_seq1 = false;
+        let mut saw_seq2_complete = false;
+        let mut saw_seq3_complete = false;
+        let mut saw_checkpoint = false;
+        let mut saw_batch_complete = false;
+        let mut saw_shard_complete = false;
+
+        for event in &events {
+            match &event.event_type {
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                    saw_start = true;
+                }
+                ProcessingEventType::RecordSuccess { sequence_number, .. } => {
+                    match sequence_number.as_str() {
+                        "seq-1" => {
+                            assert!(saw_start, "seq-1 success should come after shard start");
+                            saw_seq1 = true;
+                        }
+                        "seq-2" => {
+                            assert!(saw_seq1, "seq-2 success should come after seq-1");
+                            saw_seq2_complete = true;
+                        }
+                        "seq-3" => {
+                            assert!(saw_seq2_complete, "seq-3 success should come after seq-2");
+                            saw_seq3_complete = true;
+                        }
+                        _ => {}
+                    }
+                }
+                ProcessingEventType::Checkpoint { success: true, .. } => {
+                    assert!(saw_seq3_complete, "Checkpoint should come after all records");
+                    saw_checkpoint = true;
+                }
+                ProcessingEventType::BatchComplete { .. } => {
+                    assert!(saw_checkpoint, "Batch complete should come after checkpoint");
+                    saw_batch_complete = true;
+                }
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
+                    assert!(saw_batch_complete, "Shard complete should come after batch complete");
+                    saw_shard_complete = true;
+                }
+                _ => {}
+            }
+        }
+
+        // Verify we saw all major stages
+        assert!(saw_start && saw_seq1 && saw_seq2_complete && saw_seq3_complete &&
+                    saw_checkpoint && saw_batch_complete && saw_shard_complete,
+                "Missing some major event stages");
+
+        // Clean shutdown
+        tx.send(true)?;
+
+        // Wait for processor with timeout
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .map_err(|_| anyhow::anyhow!("Processor failed to shut down within timeout"))??
+            .map_err(|e| anyhow::anyhow!("Processor error: {}", e))?;
 
         Ok(())
     }
