@@ -1,10 +1,21 @@
-
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
 
+    use crate::client::KinesisClientError;
+    use crate::monitoring::{
+        IteratorEventType, MonitoringConfig, ProcessingEventType, TestMonitoringHarness,
+    };
+    use crate::processor::InitialPosition;
+    use crate::test::mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor};
+    use crate::test::TestUtils;
+    use crate::tests::common;
+    use crate::tests::common::{TestContext, TestEventType};
+    use crate::{
+        CheckpointStore, InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig, ProcessorError,
+    };
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Once};
@@ -13,14 +24,6 @@ mod tests {
     use tracing::error;
     use tracing::warn;
     use tracing::{debug, info};
-    use crate::{CheckpointStore, InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig, ProcessorError};
-    use crate::client::KinesisClientError;
-    use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEventType, TestMonitoringHarness};
-    use crate::processor::InitialPosition;
-    use crate::test::mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor};
-    use crate::test::TestUtils;
-    use crate::tests::common;
-    use crate::tests::common::{TestContext, TestEventType};
 
     // 1. Create a static variable that can only be executed once
     static INIT: Once = Once::new();
@@ -413,7 +416,9 @@ mod tests {
 
         // Collect error propagation sequence
         let mut error_sequence = Vec::new();
-        while let Ok(error) = tokio::time::timeout(Duration::from_millis(100), error_rx.recv()).await {
+        while let Ok(error) =
+            tokio::time::timeout(Duration::from_millis(100), error_rx.recv()).await
+        {
             if let Some(error) = error {
                 error_sequence.push(error);
             } else {
@@ -948,7 +953,8 @@ mod tests {
 
         // Run processor
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         let start_time = std::time::Instant::now();
         tokio::spawn(async move { processor_instance.run(shutdown_rx).await });
@@ -997,5 +1003,4 @@ mod tests {
 
         Ok(())
     }
-
 }

@@ -35,7 +35,6 @@ pub trait CheckpointStoreTestExt: CheckpointStore {
     }
 }
 
-
 impl<T: CheckpointStore> CheckpointStoreTestExt for T {}
 
 // Re-export implementations

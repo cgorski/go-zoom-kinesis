@@ -244,7 +244,6 @@ pub struct TestMonitoringHarness {
     event_history: Arc<Mutex<Vec<ProcessingEvent>>>,
 }
 
-
 impl TestMonitoringHarness {
     pub fn new(monitoring_rx: mpsc::Receiver<ProcessingEvent>) -> Self {
         Self {

@@ -58,7 +58,6 @@ pub struct DynamoDbCheckpointStore {
     backoff: ExponentialBackoff,
 }
 
-
 impl DynamoDbCheckpointStore {
     pub fn builder() -> DynamoDbCheckpointStoreBuilder {
         DynamoDbCheckpointStoreBuilder::new()
@@ -76,7 +75,6 @@ impl DynamoDbCheckpointStore {
         format!("{}{}", self.key_prefix, shard_id)
     }
 }
-
 
 #[async_trait]
 impl CheckpointStore for DynamoDbCheckpointStore {

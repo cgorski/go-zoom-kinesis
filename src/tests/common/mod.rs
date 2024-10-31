@@ -2,13 +2,13 @@
 #[allow(unused_imports)]
 use anyhow::Result;
 
+use crate::monitoring::MonitoringConfig;
+use crate::processor::InitialPosition;
+use crate::test::mocks::{MockKinesisClient, MockRecordProcessor};
+use crate::{InMemoryCheckpointStore, ProcessorConfig};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use crate::monitoring::MonitoringConfig;
-use crate::processor::InitialPosition;
-use crate::{InMemoryCheckpointStore, ProcessorConfig};
-use crate::test::mocks::{MockKinesisClient, MockRecordProcessor};
 
 pub fn create_test_config() -> ProcessorConfig {
     ProcessorConfig {

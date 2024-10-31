@@ -198,5 +198,4 @@ pub use crate::store::CheckpointStore;
 
 pub use crate::store::memory::InMemoryCheckpointStore;
 
-
 pub use crate::store::dynamodb::DynamoDbCheckpointStore;

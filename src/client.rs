@@ -91,7 +91,6 @@ pub trait KinesisClientTestExt: KinesisClientTrait {
     }
 }
 
-
 impl<T: KinesisClientTrait> KinesisClientTestExt for T {}
 
 #[async_trait]

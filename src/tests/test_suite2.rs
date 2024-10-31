@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use std::time::Duration;
     use crate::client::KinesisClientError;
-    use crate::{CheckpointStore, KinesisProcessor};
     use crate::test::TestUtils;
     use crate::tests::common::{verify_processing_complete, TestContext};
+    use crate::{CheckpointStore, KinesisProcessor};
+    use anyhow::Result;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_multiple_shard_processing() -> Result<()> {
