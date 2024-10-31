@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use crate::test::collect_monitoring_events;
+use std::collections::VecDeque;
 use crate::error::BeforeCheckpointError;
 use crate::KinesisProcessor;
 use crate::test::TestUtils;
@@ -37,26 +38,7 @@ use super::*;
 
         (client, processor, store, config)
     }
-    async fn collect_monitoring_events(
-        rx: &mut Option<mpsc::Receiver<ProcessingEvent>>,
-        timeout: Duration,
-    ) -> Vec<ProcessingEvent> {
-        let mut events = Vec::new();
-        let start = std::time::Instant::now();
 
-        if let Some(receiver) = rx {
-            while let Ok(Some(event)) = tokio::time::timeout(
-                Duration::from_millis(10),
-                receiver.recv()
-            ).await {
-                events.push(event);
-                if start.elapsed() > timeout {
-                    break;
-                }
-            }
-        }
-        events
-    }
 
     fn verify_event_sequence(events: &[ProcessingEvent], expected_sequence: &[&str]) -> bool {
         let event_strings: Vec<String> = events.iter()

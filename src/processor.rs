@@ -1545,7 +1545,8 @@ enum BatchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::test::collect_monitoring_events;
+use super::*;
     use crate::monitoring::ProcessingEventType;
     use crate::test::{
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
@@ -1824,18 +1825,14 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn test_processor_with_monitoring() -> anyhow::Result<()> {
+    async fn test_processor_with_monitoring() -> Result<()> {
         init_logging();
         info!("Starting monitoring test");
-
-        // Setup - create mocks without Arc
-        let client = MockKinesisClient::new();
-        let processor = MockRecordProcessor::new();
-        let store = MockCheckpointStore::new();
 
         // Configure with monitoring enabled
         let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
+            batch_size: 100,
             monitoring: MonitoringConfig {
                 enabled: true,
                 channel_size: 100,
@@ -1846,6 +1843,10 @@ mod tests {
             ..Default::default()
         };
 
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = MockCheckpointStore::new();
+
         // Setup test data
         client
             .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
@@ -1853,61 +1854,114 @@ mod tests {
         client
             .mock_get_iterator(Ok("test-iterator".to_string()))
             .await;
+
+        // Create test record
+        let test_record = TestUtils::create_test_record("seq-1", b"test");
         client
-            .mock_get_records(Ok((
-                vec![TestUtils::create_test_record("seq-1", b"test")],
-                Some("next-iterator".to_string()),
-            )))
+            .mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string()))))
             .await;
 
-        // Create processor with monitoring
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, monitoring_rx) = KinesisProcessor::new(
-            config,
-            processor.clone(), // The Clone trait is implemented for the mocks
-            client,
-            store,
-        );
+        let (processor_instance, mut monitoring_rx) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
-        let mut monitoring_rx = monitoring_rx.expect("Monitoring should be enabled");
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let events_clone = events.clone();
-
-        // Spawn monitoring task
-        let monitoring_handle = tokio::spawn(async move {
-            while let Some(event) = monitoring_rx.recv().await {
-                debug!("Received monitoring event: {:?}", event);
-                events_clone.lock().await.push(event);
-            }
+        // Spawn processor task
+        let handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
         });
 
-        // Run processor
-        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
+        // Collect and verify events
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
 
-        // Let it run briefly
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Debug print events
+        println!("\nReceived Events:");
+        for event in &events {
+            println!("Event: {:?}", event);
+        }
 
-        // Shutdown
-        tx.send(true)?;
+        // Verify we got all expected event types
+        let mut found_events = HashSet::new();
+        for event in &events {
+            match &event.event_type {
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                    found_events.insert("shard_start");
+                }
+                ProcessingEventType::RecordSuccess { .. } => {
+                    found_events.insert("record_success");
+                }
+                ProcessingEventType::Checkpoint { success: true, .. } => {
+                    found_events.insert("checkpoint_success");
+                }
+                ProcessingEventType::BatchComplete { .. } => {
+                    found_events.insert("batch_complete");
+                }
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
+                    found_events.insert("shard_complete");
+                }
+                _ => {}
+            }
+        }
 
-        // Wait for tasks
-        let (processor_result, _) = tokio::join!(processor_handle, monitoring_handle);
-        processor_result??; // Propagate any errors
+        // Verify required events
+        let required_events = vec![
+            "shard_start",
+            "record_success",
+            "checkpoint_success",
+            "batch_complete",
+            "shard_complete",
+        ];
 
-        // Verify results
-        let events = events.lock().await;
-        assert!(!events.is_empty(), "Should have received monitoring events");
+        for required in required_events {
+            assert!(
+                found_events.contains(required),
+                "Missing required event: {}. Found events: {:?}",
+                required,
+                found_events
+            );
+        }
 
-        // Check for specific event types
-        let record_events = events
-            .iter()
-            .filter(|e| matches!(e.event_type, ProcessingEventType::RecordAttempt { .. }))
-            .count();
-        assert!(record_events > 0, "Should have record processing events");
+        // Verify event ordering
+        let mut saw_start = false;
+        let mut saw_success = false;
+        let mut saw_checkpoint = false;
+        let mut saw_batch = false;
+        let mut saw_complete = false;
+
+        for event in events {
+            match event.event_type {
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                    saw_start = true;
+                    assert!(!saw_success, "Start should come before success");
+                }
+                ProcessingEventType::RecordSuccess { .. } => {
+                    saw_success = true;
+                    assert!(saw_start, "Success should come after start");
+                }
+                ProcessingEventType::Checkpoint { success: true, .. } => {
+                    saw_checkpoint = true;
+                    assert!(saw_success, "Checkpoint should come after success");
+                }
+                ProcessingEventType::BatchComplete { .. } => {
+                    saw_batch = true;
+                    assert!(saw_checkpoint, "Batch complete should come after checkpoint");
+                }
+                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
+                    saw_complete = true;
+                    assert!(saw_batch, "Complete should come after batch");
+                }
+                _ => {}
+            }
+        }
+
+        // Verify we saw all events in correct order
+        assert!(saw_start && saw_success && saw_checkpoint && saw_batch && saw_complete,
+                "Missing some events in the sequence");
+
+        tx.send(true).map_err(|e| anyhow::anyhow!("Failed to send shutdown signal: {}", e))?;
+        handle.await??;
 
         Ok(())
     }
-
     #[tokio::test]
     async fn test_metadata_basic() -> Result<()> {
         let config = ProcessorConfig {

@@ -229,6 +229,11 @@ impl ProcessingError {
     }
 }
 
+impl From<tokio::sync::watch::error::SendError<bool>> for ProcessorError {
+    fn from(err: tokio::sync::watch::error::SendError<bool>) -> Self {
+        ProcessorError::Other(anyhow::anyhow!("Watch channel send error: {}", err))
+    }
+}
 // In src/error.rs
 #[derive(Debug, Error)]
 pub enum BeforeCheckpointError {
@@ -238,6 +243,7 @@ pub enum BeforeCheckpointError {
     #[error("Hard error (proceeds with checkpoint): {0}")]
     HardError(#[source] anyhow::Error),
 }
+
 
 impl BeforeCheckpointError {
     pub fn soft(err: impl Into<anyhow::Error>) -> Self {
