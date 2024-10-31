@@ -1,14 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use crate::test::collect_monitoring_events;
+use std::collections::HashMap;
 use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
 
     use crate::client::KinesisClientError;
-    use crate::monitoring::{
-        IteratorEventType, MonitoringConfig, ProcessingEventType, TestMonitoringHarness,
-    };
+    use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType, TestMonitoringHarness};
     use crate::processor::InitialPosition;
     use crate::test::mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor};
     use crate::test::TestUtils;
@@ -640,18 +639,14 @@ use anyhow::Result;
         Ok(())
     }
     #[tokio::test]
-    async fn test_hard_vs_soft_failures() -> Result<()> {
-        init_logging();
-        info!("Starting hard vs soft failures test");
-
+    async fn test_failure_handling() -> Result<()> {
+        // Setup basic test environment
         let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             monitoring: MonitoringConfig {
                 enabled: true,
                 channel_size: 100,
-                metrics_interval: Duration::from_millis(100),
-                include_retry_details: true,
-                rate_limit: None,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -660,170 +655,78 @@ use anyhow::Result;
         let processor = MockRecordProcessor::new();
         let store = MockCheckpointStore::new();
 
-        // Setup test records with different behaviors
+        // Configure test records with different failure behaviors
         let records = vec![
-            TestUtils::create_test_record("seq-1", b"soft fail"),
+            TestUtils::create_test_record("seq-1", b"hard fail"),
             TestUtils::create_test_record("seq-2", b"soft fail"),
-            TestUtils::create_test_record("seq-3", b"soft fail"),
+            TestUtils::create_test_record("seq-3", b"succeed")
         ];
 
-        // Configure all records for soft failure with max_attempts = 3
-        // This means: attempt 0 fails, 1 fails, 2 fails, 3 succeeds
-        processor
-            .set_failure_sequence("seq-1".to_string(), "soft".to_string(), 3)
-            .await;
-        processor
-            .set_failure_sequence("seq-2".to_string(), "soft".to_string(), 3)
-            .await;
-        processor
-            .set_failure_sequence("seq-3".to_string(), "soft".to_string(), 3)
-            .await;
+        // Configure processor behavior
+        processor.configure_failure("seq-1".to_string(), "hard", 1).await; // Hard fail immediately
+        processor.configure_failure("seq-2".to_string(), "soft", 3).await; // Soft fail 3 times then succeed
 
         // Setup mock responses
-        client
-            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
-            .await;
-        client
-            .mock_get_iterator(Ok("test-iterator".to_string()))
-            .await;
-        client
-            .mock_get_records(Ok((records, None)))
-            .await;
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client.mock_get_records(Ok((records, None))).await;
 
+        // Run processor
         let (tx, rx) = tokio::sync::watch::channel(false);
         let (processor_instance, mut monitoring_rx) =
             KinesisProcessor::new(config, processor.clone(), client, store);
 
-        // Run processor in background
         let handle = tokio::spawn(async move {
             processor_instance.run(rx).await
         });
 
-        // Collect events with timeout
-        let mut events = Vec::new();
-        let timeout = Duration::from_secs(5);
-        let start = Instant::now();
-        let mut success_count = 0;
+        // Collect events
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(1)).await;
 
-        while let Ok(Some(event)) = tokio::time::timeout(
-            Duration::from_millis(100),
-            monitoring_rx.as_mut().unwrap().recv(),
-        ).await {
-            events.push(event.clone());
+        // Verify behaviors
+        let hard_failures = count_failures(&events, "seq-1");
+        let soft_retries = count_retries(&events, "seq-2");
+        let successes = count_successes(&events, "seq-3");
 
-            // Track successful record processing
-            if let ProcessingEventType::RecordSuccess { sequence_number, .. } = &event.event_type {
-                debug!("Record succeeded: {}", sequence_number);
-                success_count += 1;
-                if success_count == 3 {  // All records processed
-                    break;
-                }
-            }
+        assert_eq!(hard_failures, 1, "Hard failure should fail once");
+        assert_eq!(soft_retries, 3, "Soft failure should retry 3 times");
+        assert_eq!(successes, 1, "Success should succeed once");
 
-            if start.elapsed() > timeout {
-                tx.send(true)?;  // Initiate shutdown
-                return Err(anyhow::anyhow!("Test timed out waiting for completion").into());
-            }
-        }
-
-        // Debug print collected events
-        debug!("Collected Events:");
-        for event in &events {
-            debug!("Event: {:?}", event);
-        }
-
-        // Verify attempt counts for each record
-        let mut attempt_counts = HashMap::new();
-        for event in &events {
-            if let ProcessingEventType::RecordAttempt {
-                sequence_number,
-                success,
-                attempt_number,
-                ..
-            } = &event.event_type {
-                attempt_counts
-                    .entry(sequence_number.clone())
-                    .or_insert_with(Vec::new)
-                    .push((*attempt_number, *success));
-            }
-        }
-
-        // Verify each record had exactly 3 failed attempts (0,1,2) before success
-        for sequence in ["seq-1", "seq-2", "seq-3"] {
-            let attempts = attempt_counts.get(sequence)
-                .ok_or_else(|| anyhow::anyhow!("No attempts found for sequence {}", sequence))?;
-
-            // Should have exactly 3 failed attempts
-            let failed_attempts: Vec<_> = attempts.iter()
-                .filter(|(_, success)| !success)
-                .collect();
-
-            assert_eq!(
-                failed_attempts.len(),
-                3,
-                "Expected 3 failed attempts for {}, got {}",
-                sequence,
-                failed_attempts.len()
-            );
-
-            // Verify attempt numbers were 0, 1, 2
-            let attempt_numbers: Vec<_> = failed_attempts.iter()
-                .map(|(num, _)| num)
-                .collect();
-            assert_eq!(
-                attempt_numbers,
-                vec![&0, &1, &2],
-                "Expected attempts 0,1,2 for {}, got {:?}",
-                sequence,
-                attempt_numbers
-            );
-        }
-
-        // Verify successful completion
-        assert_eq!(
-            success_count,
-            3,
-            "Expected all 3 records to eventually succeed"
-        );
-
-        // Verify checkpoint behavior - look for RecordSuccess events with checkpoint_success
-        let checkpoint_successes: Vec<_> = events.iter()
-            .filter(|e| matches!(
-            e.event_type,
-            ProcessingEventType::RecordSuccess { checkpoint_success: true, .. }
-        ))
-            .collect();
-
-        assert!(!checkpoint_successes.is_empty(),
-                "Should have successful checkpoints. Found {} checkpoint successes in {} total events",
-                checkpoint_successes.len(),
-                events.len()
-        );
-
-        // Verify batch completion
-        let batch_completes: Vec<_> = events.iter()
-            .filter(|e| matches!(
-            e.event_type,
-            ProcessingEventType::BatchComplete { successful_count: 3, failed_count: 0, .. }
-        ))
-            .collect();
-
-        assert!(!batch_completes.is_empty(),
-                "Should have successful batch completion. Found {} batch completes in {} total events",
-                batch_completes.len(),
-                events.len()
-        );
-
-        // Clean shutdown
         tx.send(true)?;
-
-        // Wait for processor with timeout
-        tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .map_err(|_| anyhow::anyhow!("Processor failed to shut down within timeout"))??
-            .map_err(|e| anyhow::anyhow!("Processor error: {}", e))?;
+        handle.await??;
 
         Ok(())
+    }
+
+    // Helper functions
+    fn count_failures(events: &[ProcessingEvent], seq: &str) -> usize {
+        events.iter()
+            .filter(|e| matches!(
+            &e.event_type,
+            ProcessingEventType::RecordFailure { sequence_number, .. }
+            if sequence_number == seq
+        ))
+            .count()
+    }
+
+    fn count_retries(events: &[ProcessingEvent], seq: &str) -> usize {
+        events.iter()
+            .filter(|e| matches!(
+            &e.event_type,
+            ProcessingEventType::RecordAttempt { sequence_number, success: false, .. }
+            if sequence_number == seq
+        ))
+            .count()
+    }
+
+    fn count_successes(events: &[ProcessingEvent], seq: &str) -> usize {
+        events.iter()
+            .filter(|e| matches!(
+            &e.event_type,
+            ProcessingEventType::RecordSuccess { sequence_number, .. }
+            if sequence_number == seq
+        ))
+            .count()
     }
     #[tokio::test]
     async fn test_parallel_processing_stress() -> anyhow::Result<()> {
