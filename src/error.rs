@@ -212,10 +212,10 @@ impl From<JoinError> for ProcessorError {
 
 #[derive(Debug, Error)]
 pub enum ProcessingError {
-    #[error("Soft failure (retriable): {0}")]
+    #[error("Soft failure (retries indefinitely): {0}")]
     SoftFailure(#[source] anyhow::Error),
 
-    #[error("Hard failure (non-retriable): {0}")]
+    #[error("Hard failure (skips record): {0}")]
     HardFailure(#[source] anyhow::Error),
 }
 
@@ -232,10 +232,10 @@ impl ProcessingError {
 // In src/error.rs
 #[derive(Debug, Error)]
 pub enum BeforeCheckpointError {
-    #[error("Soft error (retriable): {0}")]
+    #[error("Soft error (retries indefinitely): {0}")]
     SoftError(#[source] anyhow::Error),
 
-    #[error("Hard error (non-retriable): {0}")]
+    #[error("Hard error (proceeds with checkpoint): {0}")]
     HardError(#[source] anyhow::Error),
 }
 

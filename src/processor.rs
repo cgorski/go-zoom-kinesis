@@ -22,7 +22,7 @@ use crate::{
     store::CheckpointStore,
 };
 use async_trait::async_trait;
-use aws_sdk_kinesis::types::{Record, SequenceNumberRange, ShardIteratorType};
+use aws_sdk_kinesis::types::{Record, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -994,37 +994,58 @@ where
         let mut processed_items = Vec::new();
         let batch_start = Instant::now();
 
-        let mut attempt_number = 0;
-        // Process records and collect results
         for record in records {
             let sequence = record.sequence_number().to_string();
+            let mut attempt_number = 0;
 
-            // Keep trying on soft failures
             loop {
-
-                match ctx.processor.process_record(record, RecordMetadata::new(&record, shard_id.to_string(), attempt_number )).await {
+                match ctx.processor.process_record(record, RecordMetadata::new(record, shard_id.to_string(), attempt_number)).await {
                     Ok(Some(item)) => {
+                        ctx.send_monitoring_event(ProcessingEvent::record_success(
+                            shard_id.to_string(),
+                            sequence.clone(),
+                            true,
+                        )).await;
                         processed_items.push(item);
                         result.successful_records.push(sequence.clone());
                         result.last_successful_sequence = Some(sequence);
                         break;
                     }
                     Ok(None) => {
+                        ctx.send_monitoring_event(ProcessingEvent::record_success(
+                            shard_id.to_string(),
+                            sequence.clone(),
+                            true,
+                        )).await;
                         result.successful_records.push(sequence.clone());
                         result.last_successful_sequence = Some(sequence);
                         break;
                     }
                     Err(ProcessingError::SoftFailure(e)) => {
+                        attempt_number += 1;
+                        ctx.send_monitoring_event(ProcessingEvent::record_attempt(
+                            shard_id.to_string(),
+                            sequence.clone(),
+                            false,
+                            attempt_number,
+                            batch_start.elapsed(),
+                            Some(e.to_string()),
+                            false,
+                        )).await;
                         warn!(
                         shard_id = %shard_id,
                         sequence = %sequence,
                         error = %e,
                         "Soft failure processing record, retrying"
                     );
-                        attempt_number += 1;
-                        continue; // Retry this record
+                        continue;
                     }
                     Err(ProcessingError::HardFailure(e)) => {
+                        ctx.send_monitoring_event(ProcessingEvent::record_failure(
+                            shard_id.to_string(),
+                            sequence.clone(),
+                            e.to_string(),
+                        )).await;
                         warn!(
                         shard_id = %shard_id,
                         sequence = %sequence,
@@ -1038,7 +1059,7 @@ where
             }
         }
 
-        // Try before_checkpoint if we have items
+        // Before checkpoint processing with monitoring
         if !processed_items.is_empty() {
             if let Some(last_sequence) = &result.last_successful_sequence {
                 let metadata = CheckpointMetadata {
@@ -1049,9 +1070,47 @@ where
                 loop {
                     match ctx.processor.before_checkpoint(processed_items.clone(), metadata.clone()).await {
                         Ok(()) => {
-                            break; // Proceed with checkpoint
+                            // Save checkpoint after successful validation
+                            match ctx.store.save_checkpoint(shard_id, last_sequence).await {
+                                Ok(_) => {
+                                    ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                        shard_id.to_string(),
+                                        last_sequence.clone(),
+                                        true,
+                                        None,
+                                    )).await;
+                                    debug!(
+                                    shard_id = %shard_id,
+                                    sequence = %last_sequence,
+                                    "Successfully saved checkpoint"
+                                );
+                                    break;
+                                }
+                                Err(e) => {
+                                    ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                        shard_id.to_string(),
+                                        last_sequence.clone(),
+                                        false,
+                                        Some(e.to_string()),
+                                    )).await;
+                                    warn!(
+                                    shard_id = %shard_id,
+                                    sequence = %last_sequence,
+                                    error = %e,
+                                    "Failed to save checkpoint"
+                                );
+                                    // Don't break - let the loop retry the whole validation + save sequence
+                                    continue;
+                                }
+                            }
                         }
                         Err(BeforeCheckpointError::SoftError(e)) => {
+                            ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                shard_id.to_string(),
+                                last_sequence.clone(),
+                                false,
+                                Some(e.to_string()),
+                            )).await;
                             warn!(
                             shard_id = %shard_id,
                             error = %e,
@@ -1063,25 +1122,54 @@ where
                             warn!(
                             shard_id = %shard_id,
                             error = %e,
-                            "Hard error in before_checkpoint, proceeding without further before_checkpoint attempts"
+                            "Hard error in before_checkpoint, proceeding with checkpoint anyway"
                         );
-                            break; // Stop trying before_checkpoint, proceed with checkpoint
+                            // Even with hard validation error, still try to save the checkpoint
+                            match ctx.store.save_checkpoint(shard_id, last_sequence).await {
+                                Ok(_) => {
+                                    ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                        shard_id.to_string(),
+                                        last_sequence.clone(),
+                                        true,
+                                        Some("Saved despite validation failure".to_string()),
+                                    )).await;
+                                    debug!(
+                                    shard_id = %shard_id,
+                                    sequence = %last_sequence,
+                                    "Saved checkpoint despite validation failure"
+                                );
+                                }
+                                Err(e) => {
+                                    ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                        shard_id.to_string(),
+                                        last_sequence.clone(),
+                                        false,
+                                        Some(format!("Failed to save after validation failure: {}", e)),
+                                    )).await;
+                                    warn!(
+                                    shard_id = %shard_id,
+                                    sequence = %last_sequence,
+                                    error = %e,
+                                    "Failed to save checkpoint after validation failure"
+                                );
+                                }
+                            }
+                            break; // Don't retry if it was a hard error
                         }
                     }
                 }
             }
         }
 
-        Ok(result)
-    }
+        // Add batch completion event
+        ctx.send_monitoring_event(ProcessingEvent::batch_complete(
+            shard_id.to_string(),
+            result.successful_records.len(),
+            result.failed_records.len(),
+            batch_start.elapsed(),
+        )).await;
 
-    /// Handle early shutdown request
-    fn handle_early_shutdown(shard_id: &str) -> Result<()> {
-        info!(
-            shard_id = %shard_id,
-            "Shutdown signal received before processing started"
-        );
-        Err(ProcessorError::Shutdown)
+        Ok(result)
     }
 
     /// Initialize checkpoint for a shard
@@ -1097,10 +1185,10 @@ where
         match ctx.store.get_checkpoint(shard_id).await {
             Ok(Some(cp)) => {
                 info!(
-                    shard_id = %shard_id,
-                    checkpoint = %cp,
-                    "Retrieved existing checkpoint"
-                );
+                shard_id = %shard_id,
+                checkpoint = %cp,
+                "Retrieved existing checkpoint"
+            );
                 Ok(Some(cp))
             }
             Ok(None) => {
@@ -1109,10 +1197,10 @@ where
             }
             Err(e) => {
                 error!(
-                    shard_id = %shard_id,
-                    error = %e,
-                    "Failed to retrieve checkpoint"
-                );
+                shard_id = %shard_id,
+                error = %e,
+                "Failed to retrieve checkpoint"
+            );
                 Err(ProcessorError::CheckpointError(e.to_string()))
             }
         }
@@ -1139,39 +1227,39 @@ where
         };
 
         tokio::select! {
-            iterator_result = ctx.client.get_shard_iterator(
-                 &ctx.config.stream_name,
-                shard_id,
-                iterator_type,
-                checkpoint.as_deref(),
-                None,
-            ) => {
-                match iterator_result {
-                    Ok(iterator) => {
-                        debug!(
-                            shard_id = %shard_id,
-                            "Successfully acquired initial iterator"
-                        );
-                        Ok(iterator)
-                    }
-                    Err(e) => {
-                        error!(
-                            shard_id = %shard_id,
-                            error = %e,
-                            "Failed to get initial iterator"
-                        );
-                        Err(ProcessorError::GetIteratorFailed(e.to_string()))
-                    }
+        iterator_result = ctx.client.get_shard_iterator(
+             &ctx.config.stream_name,
+            shard_id,
+            iterator_type,
+            checkpoint.as_deref(),
+            None,
+        ) => {
+            match iterator_result {
+                Ok(iterator) => {
+                    debug!(
+                        shard_id = %shard_id,
+                        "Successfully acquired initial iterator"
+                    );
+                    Ok(iterator)
+                }
+                Err(e) => {
+                    error!(
+                        shard_id = %shard_id,
+                        error = %e,
+                        "Failed to get initial iterator"
+                    );
+                    Err(ProcessorError::GetIteratorFailed(e.to_string()))
                 }
             }
-            _ = shutdown_rx.changed() => {
-                info!(
-                    shard_id = %shard_id,
-                    "Shutdown received while getting initial iterator"
-                );
-                Err(ProcessorError::Shutdown)
-            }
         }
+        _ = shutdown_rx.changed() => {
+            info!(
+                shard_id = %shard_id,
+                "Shutdown received while getting initial iterator"
+            );
+            Err(ProcessorError::Shutdown)
+        }
+    }
     }
 
     /// Process a batch of records
@@ -1192,7 +1280,7 @@ where
                     IteratorEventType::Expired,
                     None,
                 ))
-                .await;
+                    .await;
 
                 // Get new iterator
                 let new_iterator = Self::get_initial_iterator(
@@ -1201,7 +1289,7 @@ where
                     &state.last_successful_sequence,
                     shutdown_rx,
                 )
-                .await?;
+                    .await?;
 
                 // Send iterator renewed event
                 ctx.send_monitoring_event(ProcessingEvent::iterator(
@@ -1209,7 +1297,7 @@ where
                     IteratorEventType::Renewed,
                     None,
                 ))
-                .await;
+                    .await;
 
                 Ok(BatchResult::Continue(new_iterator))
             }
@@ -1225,10 +1313,10 @@ where
                 if !batch_result.successful_records.is_empty() {
                     if let Some(last_sequence) = &batch_result.last_successful_sequence {
                         debug!(
-                            shard_id = %shard_id,
-                            sequence = %last_sequence,
-                            "Batch had successful records"
-                        );
+                        shard_id = %shard_id,
+                        sequence = %last_sequence,
+                        "Batch had successful records"
+                    );
                     }
                 }
 
@@ -1239,7 +1327,7 @@ where
                     batch_result.failed_records.len(),
                     batch_start.elapsed(),
                 ))
-                .await;
+                    .await;
 
                 // Continue processing with next iterator
                 match next_iterator {
@@ -1254,7 +1342,7 @@ where
                     ShardEventType::Error,
                     Some(e.to_string()),
                 ))
-                .await;
+                    .await;
 
                 Err(e)
             }
@@ -1281,7 +1369,7 @@ where
             ShardEventType::Started,
             None,
         ))
-        .await;
+            .await;
 
         if *shutdown_rx.borrow() {
             // Send early shutdown event
@@ -1290,7 +1378,7 @@ where
                 ShardEventType::Interrupted,
                 Some("Early shutdown".to_string()),
             ))
-            .await;
+                .await;
             return Self::handle_early_shutdown(shard_id);
         }
 
@@ -1306,7 +1394,7 @@ where
                         true,
                         None,
                     ))
-                    .await;
+                        .await;
                 }
                 cp
             }
@@ -1317,7 +1405,7 @@ where
                     false,
                     Some(e.to_string()),
                 ))
-                .await;
+                    .await;
                 return Err(e);
             }
         };
@@ -1332,7 +1420,7 @@ where
                         IteratorEventType::Failed,
                         Some(e.to_string()),
                     ))
-                    .await;
+                        .await;
                     return Err(e);
                 }
             };
@@ -1340,51 +1428,51 @@ where
         loop {
             let mut shutdown_rx2 = shutdown_rx.clone();
             tokio::select! {
-                batch_result = Self::process_batch(
-                    ctx,
-                    shard_id,
-                    &iterator,
-                    &mut state,
-                    &mut shutdown_rx,
-                ) => {
-                    match batch_result {
-                        Ok(BatchResult::Continue(next_it)) => {
-                            iterator = next_it;
-                            ctx.send_monitoring_event(ProcessingEvent::iterator(
-                                shard_id.to_string(),
-                                IteratorEventType::Renewed,
-                                None,
-                            )).await;
-                        }
-                        Ok(BatchResult::EndOfShard) => {
-                            ctx.send_monitoring_event(ProcessingEvent::shard_event(
-                                shard_id.to_string(),
-                                ShardEventType::Completed,
-                                None,
-                            )).await;
-                            break;
-                        }
-                        Ok(BatchResult::NoRecords) => continue,
-                        Err(e) => {
-                            ctx.send_monitoring_event(ProcessingEvent::shard_event(
-                                shard_id.to_string(),
-                                ShardEventType::Error,
-                                Some(e.to_string()),
-                            )).await;
-                            return Err(e);
-                        }
+            batch_result = Self::process_batch(
+                ctx,
+                shard_id,
+                &iterator,
+                &mut state,
+                &mut shutdown_rx,
+            ) => {
+                match batch_result {
+                    Ok(BatchResult::Continue(next_it)) => {
+                        iterator = next_it;
+                        ctx.send_monitoring_event(ProcessingEvent::iterator(
+                            shard_id.to_string(),
+                            IteratorEventType::Renewed,
+                            None,
+                        )).await;
+                    }
+                    Ok(BatchResult::EndOfShard) => {
+                        ctx.send_monitoring_event(ProcessingEvent::shard_event(
+                            shard_id.to_string(),
+                            ShardEventType::Completed,
+                            None,
+                        )).await;
+                        break;
+                    }
+                    Ok(BatchResult::NoRecords) => continue,
+                    Err(e) => {
+                        ctx.send_monitoring_event(ProcessingEvent::shard_event(
+                            shard_id.to_string(),
+                            ShardEventType::Error,
+                            Some(e.to_string()),
+                        )).await;
+                        return Err(e);
                     }
                 }
-                _ = shutdown_rx2.changed() => {
-                    info!(shard_id = %shard_id, "Shutdown received in main processing loop");
-                    ctx.send_monitoring_event(ProcessingEvent::shard_event(
-                        shard_id.to_string(),
-                        ShardEventType::Interrupted,
-                        Some("Shutdown requested".to_string()),
-                    )).await;
-                    return Err(ProcessorError::Shutdown);
-                }
             }
+            _ = shutdown_rx2.changed() => {
+                info!(shard_id = %shard_id, "Shutdown received in main processing loop");
+                ctx.send_monitoring_event(ProcessingEvent::shard_event(
+                    shard_id.to_string(),
+                    ShardEventType::Interrupted,
+                    Some("Shutdown requested".to_string()),
+                )).await;
+                return Err(ProcessorError::Shutdown);
+            }
+        }
         }
 
         info!(shard_id = %shard_id, "Completed shard processing");
@@ -1393,9 +1481,18 @@ where
             ShardEventType::Completed,
             None,
         ))
-        .await;
+            .await;
 
         Ok(())
+            }
+
+    /// Handle early shutdown request
+    fn handle_early_shutdown(shard_id: &str) -> Result<()> {
+        info!(
+        shard_id = %shard_id,
+        "Shutdown signal received before processing started"
+    );
+        Err(ProcessorError::Shutdown)
     }
 }
 
