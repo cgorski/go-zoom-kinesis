@@ -242,29 +242,18 @@ use super::*;
         let (client, processor, store, config) = setup_test_environment().await;
 
         // Configure different failure behaviors
-        processor
-            .set_failure_sequence("seq-1".to_string(), "soft".to_string(), 100)
-            .await;
-        processor
-            .set_failure_sequence("seq-2".to_string(), "hard".to_string(), 1)
-            .await;
+        processor.set_failure_sequence("seq-1".to_string(), "soft".to_string(), 100).await;
+        processor.set_failure_sequence("seq-2".to_string(), "hard".to_string(), 1).await;
 
-        // Setup test records with different behaviors
         let records = vec![
             TestUtils::create_test_record("seq-1", b"soft fail"),
             TestUtils::create_test_record("seq-2", b"hard fail"),
             TestUtils::create_test_record("seq-3", b"succeed"),
         ];
 
-        client
-            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
-            .await;
-        client
-            .mock_get_iterator(Ok("test-iterator".to_string()))
-            .await;
-        client
-            .mock_get_records(Ok((records, Some("next-iterator".to_string()))))
-            .await;
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client.mock_get_records(Ok((records, Some("next-iterator".to_string())))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
         let (processor_instance, mut monitoring_rx) =
@@ -276,35 +265,45 @@ use super::*;
 
         let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(1)).await;
 
-        // Verify behaviors
-        let soft_failure_attempts = events.iter()
+        // Count hard failures specifically
+        let hard_failures = events.iter()
             .filter(|e| matches!(
-                &e.event_type,
-                ProcessingEventType::RecordAttempt {
-                    sequence_number,
-                    success: false,
-                    ..
-                } if sequence_number == "seq-1"
-            ))
+            &e.event_type,
+            ProcessingEventType::RecordFailure {
+                sequence_number,
+                ..
+            } if sequence_number == "seq-2"
+        ))
             .count();
 
-        let hard_failure_attempts = events.iter()
+        assert_eq!(hard_failures, 1, "Hard failure should occur exactly once");
+
+        // Verify soft failures are retrying
+        let soft_failure_attempts = events.iter()
             .filter(|e| matches!(
-                &e.event_type,
-                ProcessingEventType::RecordAttempt {
-                    sequence_number,
-                    ..
-                } if sequence_number == "seq-2"
-            ))
+            &e.event_type,
+            ProcessingEventType::RecordAttempt {
+                sequence_number,
+                success: false,
+                ..
+            } if sequence_number == "seq-1"
+        ))
             .count();
 
         assert!(soft_failure_attempts > 10, "Soft failure should have multiple retries");
-        assert_eq!(hard_failure_attempts, 1, "Hard failure should have exactly one attempt");
 
         // Verify successful record was processed
-        assert!(verify_event_sequence(&events, &[
-            "record_success_seq-3",
-        ]));
+        let successes = events.iter()
+            .filter(|e| matches!(
+            &e.event_type,
+            ProcessingEventType::RecordSuccess {
+                sequence_number,
+                ..
+            } if sequence_number == "seq-3"
+        ))
+            .count();
+
+        assert_eq!(successes, 1, "Success record should be processed once");
 
         tx.send(true)?;
         handle.await??;
