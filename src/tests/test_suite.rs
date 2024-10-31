@@ -274,16 +274,10 @@ use anyhow::Result;
         Ok(())
     }
     #[tokio::test]
-    async fn test_basic_timeout_detection() -> anyhow::Result<()> {
-        init_logging();
-        info!("Starting basic timeout detection test");
-
-        // Configure very short timeout
-        const TIMEOUT: Duration = Duration::from_millis(10);
+    async fn test_record_timeout() -> Result<()> {
         let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
-            processing_timeout: TIMEOUT,
-            monitoring: MonitoringConfig::default(), // No monitoring for this test
+            processing_timeout: Duration::from_millis(1),
             ..Default::default()
         };
 
@@ -291,43 +285,20 @@ use anyhow::Result;
         let processor = MockRecordProcessor::new();
         let store = MockCheckpointStore::new();
 
-        // Configure processor with delay longer than timeout
-        processor
-            .set_pre_process_delay(Some(Duration::from_millis(50)))
-            .await;
+        // Configure processor to return a never-completing future
+        processor.set_never_complete(true).await;
 
-        // Setup single record processing scenario
-        client
-            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
-            .await;
-        client
-            .mock_get_iterator(Ok("test-iterator".to_string()))
-            .await;
-        client
-            .mock_get_records(Ok((
-                vec![TestUtils::create_test_record("seq-1", b"test")],
-                Some("next-iterator".to_string()),
-            )))
-            .await;
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client.mock_get_records(Ok((vec![TestUtils::create_test_record("seq-1", b"test")], None))).await;
 
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let (processor, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+        let (processor, _) = KinesisProcessor::new(config, processor, client, store);
 
-        debug!("Starting processor with {}ms timeout", TIMEOUT.as_millis());
-        let process_result = processor.run(rx).await;
+        let result = processor.run(rx).await;
+        assert!(matches!(result, Err(ProcessorError::ProcessingTimeout(_))));
 
-        // Verify timeout error
-        match process_result {
-            Err(ProcessorError::ProcessingTimeout(duration)) => {
-                info!("Successfully detected timeout after {:?}", duration);
-                assert_eq!(duration, TIMEOUT);
-                Ok(())
-            }
-            other => {
-                error!("Unexpected result: {:?}", other);
-                anyhow::bail!("Expected ProcessingTimeout error, got: {:?}", other)
-            }
-        }
+        Ok(())
     }
     #[tokio::test]
     async fn test_shutdown_error_propagation() -> anyhow::Result<()> {

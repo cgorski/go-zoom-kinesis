@@ -15,7 +15,7 @@ use std::{
 use crate::client::KinesisClientError;
 use anyhow::Result;
 use parking_lot;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::debug;
@@ -177,6 +177,7 @@ pub struct MockRecordProcessor {
     config: Arc<RwLock<Option<ProcessorConfig>>>,
     processing_times: Arc<RwLock<HashMap<String, Duration>>>,
     pub before_checkpoint_results: Arc<RwLock<VecDeque<Result<(), BeforeCheckpointError>>>>,
+    never_complete: Arc<AtomicBool>,
 
 }
 impl Default for MockRecordProcessor {
@@ -201,7 +202,12 @@ impl MockRecordProcessor {
             config: Arc::new(RwLock::new(None)),
             processing_times: Arc::new(RwLock::new(HashMap::new())),
             before_checkpoint_results: Arc::new(RwLock::new(VecDeque::new())),
+            never_complete: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub async fn set_never_complete(&self, value: bool) {
+        self.never_complete.store(value, Ordering::SeqCst);
     }
 
     pub async fn get_processing_times(&self) -> HashMap<String, Duration> {
@@ -444,15 +450,14 @@ impl RecordProcessor for MockRecordProcessor {
         record: &'a Record,
         metadata: RecordMetadata<'a>,
     ) -> std::result::Result<Option<Self::Item>, ProcessingError> {
-        let start_time = Instant::now();
-
-        // Check for configured delay
-        if let Some(delay) = *self.pre_process_delay.read().await {
-            tokio::time::sleep(delay).await;
+        if self.never_complete.load(Ordering::SeqCst) {
+            // This future will never complete
+            futures::future::pending::<()>().await;
+            unreachable!();
         }
-
+        let start_time = Instant::now();
         let sequence = record.sequence_number().to_string();
-        let attempt_number = metadata.attempt_number();  // Use metadata's attempt number directly
+        let attempt_number = metadata.attempt_number();
 
         // Record this attempt
         {
@@ -476,7 +481,7 @@ impl RecordProcessor for MockRecordProcessor {
                 .await
                 .get(&sequence)
                 .copied()
-                .unwrap_or(2);  // Default to 2 (allowing attempts 0, 1, 2)
+                .unwrap_or(2);
 
             let duration = start_time.elapsed();
 
@@ -501,7 +506,7 @@ impl RecordProcessor for MockRecordProcessor {
                     return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
-                    if attempt_number < max_attempts {  // Still have attempts remaining
+                    if attempt_number < max_attempts {
                         let error = format!(
                             "Simulated soft failure for sequence {} (attempt {} of {})",
                             sequence, attempt_number, max_attempts
@@ -516,10 +521,19 @@ impl RecordProcessor for MockRecordProcessor {
                             .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     }
-                    // We've reached max_attempts, proceed to success
+                }
+                "hang" => {
+                    // Create a future that never completes to test timeout
+                    std::future::pending::<()>().await;
+                    unreachable!()
                 }
                 _ => {}
             }
+        }
+
+        // Check for configured delay
+        if let Some(delay) = *self.pre_process_delay.read().await {
+            tokio::time::sleep(delay).await;
         }
 
         // Record successful processing

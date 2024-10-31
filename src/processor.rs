@@ -655,231 +655,7 @@ where
         Ok(())
     }
 
-    /// Process a record with retries and monitoring
-    ///
-    /// # Arguments
-    ///
-    /// * `ctx` - Processing context
-    /// * `record` - The record to process
-    /// * `shard_id` - ID of the shard being processed
-    /// * `shutdown_rx` - Channel receiver for shutdown signals
-    ///
-    /// # Returns
-    ///
-    /// Returns true if processing succeeded, false if failed after retries
-    /// Process a record with retries and monitoring
-    ///
-    /// # Arguments
-    ///
-    /// * `ctx` - Processing context
-    /// * `record` - The record to process
-    /// * `shard_id` - ID of the shard being processed
-    /// * `shutdown_rx` - Channel receiver for shutdown signals
-    ///
-    /// # Returns
-    ///
-    /// Returns true if processing succeeded, false if failed after retries
-    async fn process_record_with_retries(
-        ctx: &ProcessingContext<P, C, S>,
-        record: &Record,
-        shard_id: &str,
-        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<bool> {
-        let sequence = record.sequence_number().to_string();
 
-        let mut attempt = 0;
-        let max_retries = ctx.config.max_retries.unwrap_or(2);
-
-        loop {
-            attempt += 1;
-            let is_final_attempt = attempt > max_retries;
-            let record_start = Instant::now();
-
-            let metadata = RecordMetadata::new(record, shard_id.to_string(), attempt);
-
-            tokio::select! {
-                process_result = ctx.processor.process_record(record, metadata) => {
-                    match process_result {
-                        Ok(_) => {
-                            // Emit successful attempt event
-                            ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                                shard_id.to_string(),
-                                sequence.clone(),
-                                true,  // success
-                                attempt,
-                                record_start.elapsed(),
-                                None,  // no error
-                                false, // not final attempt
-                            )).await;
-
-                            // Attempt to checkpoint
-                            match Self::checkpoint_record(ctx, shard_id, &sequence).await? {
-                                true => {
-                                    // Emit success event
-                                    ctx.send_monitoring_event(ProcessingEvent::record_success(
-                                        shard_id.to_string(),
-                                        sequence.clone(),
-                                        true, // checkpoint_success
-                                    )).await;
-
-                                    debug!(
-                                        shard_id = %shard_id,
-                                        sequence = %sequence,
-                                        "Record processed and checkpointed successfully"
-                                    );
-
-                                    return Ok(true);
-                                }
-                                false => {
-                                    // Handle checkpoint failure
-                                    ctx.send_monitoring_event(ProcessingEvent::checkpoint_failure(
-                                        shard_id.to_string(),
-                                        sequence.clone(),
-                                        "Failed to save checkpoint".to_string(),
-                                    )).await;
-
-                                    if is_final_attempt {
-                                        warn!(
-                                            shard_id = %shard_id,
-                                            sequence = %sequence,
-                                            attempts = attempt,
-                                            "Max retries exceeded for checkpoint"
-                                        );
-                                        return Ok(false);
-                                    }
-
-                                    warn!(
-                                        shard_id = %shard_id,
-                                        sequence = %sequence,
-                                        attempt = attempt,
-                                        "Checkpoint failed, will retry"
-                                    );
-
-                                    tokio::time::sleep(Duration::from_millis(100 * (2_u64.pow(attempt - 1)))).await;
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(ProcessingError::SoftFailure(e)) => {
-                            if is_final_attempt {
-                                warn!(
-                                    shard_id = %shard_id,
-                                    error = %e,
-                                    sequence = %sequence,
-                                    attempts = attempt,
-                                    "Max retries exceeded for soft failure"
-                                );
-
-                                ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                                    shard_id.to_string(),
-                                    sequence.clone(),
-                                    false,  // failure
-                                    attempt,
-                                    record_start.elapsed(),
-                                    Some(e.to_string()),
-                                    true,  // final attempt
-                                )).await;
-
-                                ctx.send_monitoring_event(ProcessingEvent::record_failure(
-                                    shard_id.to_string(),
-                                    sequence.clone(),
-                                    format!("Final attempt failed: {}", e),
-                                )).await;
-
-                                return Ok(false);
-                            }
-
-                            warn!(
-                                shard_id = %shard_id,
-                                error = %e,
-                                sequence = %sequence,
-                                attempt = attempt,
-                                "Soft failure, will retry"
-                            );
-
-                            ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                                shard_id.to_string(),
-                                sequence.clone(),
-                                false,  // failure
-                                attempt,
-                                record_start.elapsed(),
-                                Some(e.to_string()),
-                                false,  // not final attempt
-                            )).await;
-
-                            tokio::time::sleep(Duration::from_millis(100 * (2_u64.pow(attempt - 1)))).await;
-                            continue;
-                        }
-                        Err(ProcessingError::HardFailure(e)) => {
-                            error!(
-                                shard_id = %shard_id,
-                                error = %e,
-                                sequence = %sequence,
-                                "Hard failure, will not retry"
-                            );
-
-                            ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                                shard_id.to_string(),
-                                sequence.clone(),
-                                false,  // failure
-                                attempt,
-                                record_start.elapsed(),
-                                Some(e.to_string()),
-                                true,  // final attempt
-                            )).await;
-
-                            ctx.send_monitoring_event(ProcessingEvent::record_failure(
-                                shard_id.to_string(),
-                                sequence.clone(),
-                                format!("Hard failure: {}", e),
-                            )).await;
-
-                            return Ok(false);
-                        }
-                    }
-                }
-                _ = shutdown_rx.changed() => {
-                    info!(
-                        shard_id = %shard_id,
-                        sequence = %sequence,
-                        "Shutdown requested during record processing"
-                    );
-
-                    ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                        shard_id.to_string(),
-                        sequence.clone(),
-                        false,  // failure
-                        attempt,
-                        record_start.elapsed(),
-                        Some("Shutdown requested".to_string()),
-                        true,  // final attempt
-                    )).await;
-
-                    return Err(ProcessorError::Shutdown);
-                }
-                _ = tokio::time::sleep(ctx.config.processing_timeout) => {
-                    warn!(
-                        shard_id = %shard_id,
-                        sequence = %sequence,
-                        timeout = ?ctx.config.processing_timeout,
-                        "Record processing timed out"
-                    );
-
-                    ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-                        shard_id.to_string(),
-                        sequence.clone(),
-                        false,  // failure
-                        attempt,
-                        record_start.elapsed(),
-                        Some("Processing timeout".to_string()),
-                        true,  // final attempt
-                    )).await;
-
-                    return Err(ProcessorError::ProcessingTimeout(ctx.config.processing_timeout));
-                }
-            }
-        }
-    }
     /// Process all shards in the stream
     async fn process_stream(
         &self,
@@ -996,29 +772,32 @@ where
         let batch_start = Instant::now();
 
         // Process each record
+        // New code with both retry logic and timeouts
         for record in records {
             let sequence = record.sequence_number().to_string();
             let mut attempt_number = 0;  // Start at attempt 0
 
-            loop {
+            loop {  // <-- Keep the retry loop
                 // Check for shutdown signal
                 if *shutdown_rx.borrow() {
                     return Err(ProcessorError::Shutdown);
                 }
 
                 debug!(
-                shard_id = %shard_id,
-                sequence = %sequence,
-                attempt = attempt_number,
-                "Processing record attempt"
-            );
+            shard_id = %shard_id,
+            sequence = %sequence,
+            attempt = attempt_number,
+            "Processing record attempt"
+        );
 
-                match ctx.processor.process_record(
-                    record,
-                    RecordMetadata::new(record, shard_id.to_string(), attempt_number)
-                ).await {
+                // Add timeout handling with select!
+                tokio::select! {
+            process_result = ctx.processor.process_record(
+                record,
+                RecordMetadata::new(record, shard_id.to_string(), attempt_number)
+            ) => {
+                match process_result {
                     Ok(Some(item)) => {
-                        // Success with item
                         ctx.send_monitoring_event(ProcessingEvent::record_success(
                             shard_id.to_string(),
                             sequence.clone(),
@@ -1027,10 +806,9 @@ where
                         processed_items.push(item);
                         result.successful_records.push(sequence.clone());
                         result.last_successful_sequence = Some(sequence);
-                        break;
+                        break;  // Success - exit retry loop
                     }
                     Ok(None) => {
-                        // Success without item
                         ctx.send_monitoring_event(ProcessingEvent::record_success(
                             shard_id.to_string(),
                             sequence.clone(),
@@ -1038,7 +816,7 @@ where
                         )).await;
                         result.successful_records.push(sequence.clone());
                         result.last_successful_sequence = Some(sequence);
-                        break;
+                        break;  // Success - exit retry loop
                     }
                     Err(ProcessingError::SoftFailure(e)) => {
                         ctx.send_monitoring_event(ProcessingEvent::record_attempt(
@@ -1052,15 +830,15 @@ where
                         )).await;
 
                         warn!(
-                        shard_id = %shard_id,
-                        sequence = %sequence,
-                        attempt = attempt_number,
-                        error = %e,
-                        "Soft failure processing record, retrying"
-                    );
+                            shard_id = %shard_id,
+                            sequence = %sequence,
+                            attempt = attempt_number,
+                            error = %e,
+                            "Soft failure processing record, retrying"
+                        );
 
                         attempt_number += 1;  // Increment for next attempt
-                        continue;
+                        continue;  // Retry
                     }
                     Err(ProcessingError::HardFailure(e)) => {
                         ctx.send_monitoring_event(ProcessingEvent::record_failure(
@@ -1070,17 +848,37 @@ where
                         )).await;
 
                         warn!(
-                        shard_id = %shard_id,
-                        sequence = %sequence,
-                        error = %e,
-                        "Hard failure processing record, skipping"
-                    );
+                            shard_id = %shard_id,
+                            sequence = %sequence,
+                            error = %e,
+                            "Hard failure processing record, skipping"
+                        );
 
                         result.failed_records.push(sequence);
-                        break;
+                        break;  // Hard failure - exit retry loop
                     }
                 }
             }
+            _ = shutdown_rx.changed() => {
+                info!(
+                    shard_id = %shard_id,
+                    sequence = %sequence,
+                    "Shutdown requested during record processing"
+                );
+                return Err(ProcessorError::Shutdown);
+            }
+            _ = tokio::time::sleep(ctx.config.processing_timeout) => {
+                warn!(
+                    shard_id = %shard_id,
+                    sequence = %sequence,
+                    timeout = ?ctx.config.processing_timeout,
+                    "Record processing timed out"
+                );
+                return Err(ProcessorError::ProcessingTimeout(ctx.config.processing_timeout));
+            }
+        }
+            }
+
         }
 
         // Process checkpoint validation if we have successful records
@@ -1094,7 +892,6 @@ where
                 loop {
                     match ctx.processor.before_checkpoint(processed_items.clone(), metadata.clone()).await {
                         Ok(()) => {
-                            // Try to save the checkpoint
                             match ctx.store.save_checkpoint(shard_id, last_sequence).await {
                                 Ok(()) => {
                                     ctx.send_monitoring_event(ProcessingEvent::checkpoint(
@@ -1150,7 +947,6 @@ where
                             error = %e,
                             "Hard error in before_checkpoint, proceeding with checkpoint anyway"
                         );
-                            // Proceed with checkpoint despite validation failure
                             break;
                         }
                     }
@@ -1169,7 +965,7 @@ where
         Ok(result)
     }
 
-    /// Initialize checkpoint for a shard
+        /// Initialize checkpoint for a shard
     ///
     /// # Arguments
     ///
