@@ -176,7 +176,7 @@ pub struct MockRecordProcessor {
     expected_attempts: Arc<RwLock<HashMap<String, u32>>>,
     config: Arc<RwLock<Option<ProcessorConfig>>>,
     processing_times: Arc<RwLock<HashMap<String, Duration>>>,
-    before_checkpoint_results: Arc<RwLock<VecDeque<Result<(), BeforeCheckpointError>>>>,
+    pub before_checkpoint_results: Arc<RwLock<VecDeque<Result<(), BeforeCheckpointError>>>>,
 
 }
 impl Default for MockRecordProcessor {

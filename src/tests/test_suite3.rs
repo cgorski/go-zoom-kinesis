@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::error::BeforeCheckpointError;
+    use std::collections::VecDeque;
+use crate::error::BeforeCheckpointError;
 use crate::KinesisProcessor;
 use crate::test::TestUtils;
 use crate::ProcessorConfig;
@@ -332,12 +333,18 @@ use super::*;
     async fn test_checkpoint_validation_behavior() -> Result<()> {
         let (client, processor, store, config) = setup_test_environment().await;
 
-        // Configure processor to succeed but fail checkpoint validation
-        processor
-            .configure_before_checkpoint_behavior(
-                BeforeCheckpointError::soft(anyhow::anyhow!("Validation failed"))
-            )
-            .await;
+        // Configure processor to succeed processing but repeatedly fail checkpoint validation
+        let mut validation_results = VecDeque::new();
+        for _ in 0..20 {  // Queue up multiple soft failures
+            validation_results.push_back(Err(BeforeCheckpointError::soft(
+                anyhow::anyhow!("Validation failed")
+            )));
+        }
+
+        processor.before_checkpoint_results
+            .write()
+            .await
+            .extend(validation_results);
 
         let records = vec![
             TestUtils::create_test_record("seq-1", b"checkpoint validate fail"),
@@ -361,21 +368,56 @@ use super::*;
             processor_instance.run(rx).await
         });
 
-        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(1)).await;
+        // Wait for events to be collected
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
 
-        // Verify checkpoint validation retries
-        let validation_attempts = events.iter()
+        // Debug print all events
+        println!("\nReceived Events:");
+        for event in &events {
+            println!("Event: {:?}", event);
+        }
+
+        // Count soft validation failures
+        let validation_failures = events.iter()
             .filter(|e| matches!(
-            e.event_type,
+            &e.event_type,
             ProcessingEventType::Checkpoint {
                 success: false,
+                error: Some(err),
                 ..
-            }
+            } if err.contains("Validation failed")
         ))
             .count();
 
-        assert!(validation_attempts > 10, "Checkpoint validation should retry on soft failures");
+        // Verify we got multiple validation failures
+        assert!(
+            validation_failures > 10,
+            "Expected multiple validation failures, got {}",
+            validation_failures
+        );
 
+        // Verify we never got a successful checkpoint while validation was failing
+        let premature_successes = events.iter()
+            .take_while(|e| !matches!(
+            &e.event_type,
+            ProcessingEventType::Checkpoint {
+                success: true,
+                ..
+            }
+        ))
+            .filter(|e| matches!(
+            &e.event_type,
+            ProcessingEventType::BatchComplete { .. }
+        ))
+            .count();
+
+        assert_eq!(
+            premature_successes,
+            0,
+            "Should not complete batch while validation is failing"
+        );
+
+        // Clean shutdown
         tx.send(true)?;
         handle.await??;
 
