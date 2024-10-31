@@ -1,4 +1,4 @@
 mod monitoring_utils;
-mod tests;
+mod test_suite;
 mod common;
-mod tests2;
+mod test_suite2;
