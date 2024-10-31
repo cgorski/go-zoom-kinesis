@@ -8,6 +8,7 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
+use crate::monitoring::ProcessingEventType::BatchMetrics;
 use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -1266,7 +1267,7 @@ where
         state: &mut ShardProcessingState,
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<BatchResult> {
-        let batch_start = std::time::Instant::now();
+        let batch_start = Instant::now();
 
         match Self::get_records_batch(ctx, shard_id, iterator, shutdown_rx).await {
             Err(ProcessorError::IteratorExpired(_)) => {
@@ -1275,8 +1276,7 @@ where
                     shard_id.to_string(),
                     IteratorEventType::Expired,
                     None,
-                ))
-                    .await;
+                )).await;
 
                 // Get new iterator
                 let new_iterator = Self::get_initial_iterator(
@@ -1284,26 +1284,31 @@ where
                     shard_id,
                     &state.last_successful_sequence,
                     shutdown_rx,
-                )
-                    .await?;
+                ).await?;
 
                 // Send iterator renewed event
                 ctx.send_monitoring_event(ProcessingEvent::iterator(
                     shard_id.to_string(),
                     IteratorEventType::Renewed,
                     None,
-                ))
-                    .await;
+                )).await;
 
                 Ok(BatchResult::Continue(new_iterator))
             }
             Ok((records, next_iterator)) => {
                 if records.is_empty() && next_iterator.is_none() {
+                    // Send empty batch completion event
+                    ctx.send_monitoring_event(ProcessingEvent::batch_complete(
+                        shard_id.to_string(),
+                        0,
+                        0,
+                        batch_start.elapsed(),
+                    )).await;
+
                     return Ok(BatchResult::EndOfShard);
                 }
 
-                let batch_result =
-                    Self::process_records(ctx, shard_id, &records, state, shutdown_rx).await?;
+                let batch_result = Self::process_records(ctx, shard_id, &records, state, shutdown_rx).await?;
 
                 // Handle batch completion
                 if !batch_result.successful_records.is_empty() {
@@ -1322,8 +1327,7 @@ where
                     batch_result.successful_records.len(),
                     batch_result.failed_records.len(),
                     batch_start.elapsed(),
-                ))
-                    .await;
+                )).await;
 
                 // Continue processing with next iterator
                 match next_iterator {
@@ -1337,14 +1341,12 @@ where
                     shard_id.to_string(),
                     ShardEventType::Error,
                     Some(e.to_string()),
-                ))
-                    .await;
+                )).await;
 
                 Err(e)
             }
         }
     }
-
     /// Process a single shard
     ///
     /// # Arguments

@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, Mutex};
 #[allow(unused_imports)]
 use tracing::debug;
+use crate::monitoring::metrics::BatchMetrics;
 
 /// Configuration for the monitoring system
 #[derive(Debug, Clone)]
@@ -56,6 +57,16 @@ pub enum ProcessingEventType {
         duration: Duration,
         error: Option<String>,
         is_final_attempt: bool,
+    },
+    BatchStart {
+        timestamp: SystemTime,
+    },
+    BatchMetrics {
+        metrics: BatchMetrics,
+    },
+    BatchError {
+        error: String,
+        duration: Duration,
     },
     BatchComplete {
         successful_count: usize,
@@ -129,6 +140,33 @@ impl ProcessingEvent {
             },
         }
     }
+
+    pub fn batch_start(shard_id: String) -> Self {
+        Self {
+            timestamp: SystemTime::now(),
+            shard_id,
+            event_type: ProcessingEventType::BatchStart {
+                timestamp: SystemTime::now(),
+            },
+        }
+    }
+
+    pub fn batch_metrics(shard_id: String, metrics: BatchMetrics) -> Self {
+        Self {
+            timestamp: SystemTime::now(),
+            shard_id,
+            event_type: ProcessingEventType::BatchMetrics { metrics },
+        }
+    }
+
+    pub fn batch_error(shard_id: String, error: String, duration: Duration) -> Self {
+        Self {
+            timestamp: SystemTime::now(),
+            shard_id,
+            event_type: ProcessingEventType::BatchError { error, duration },
+        }
+    }
+
     pub fn record_success(
         shard_id: String,
         sequence_number: String,
@@ -406,6 +444,17 @@ impl TestMonitoringHarness {
                     "checkpoint_failure_{}_error_{}",
                     sequence_number, error
                 ));
+            }
+            ProcessingEventType::BatchStart { timestamp } => {
+                events.insert(format!("batch_start_{:?}", timestamp));
+            }
+            ProcessingEventType::BatchMetrics { metrics } => {
+                events.insert(format!("batch_metrics_success_{}", metrics.successful_count));
+                events.insert(format!("batch_metrics_failed_{}", metrics.failed_count));
+            }
+            ProcessingEventType::BatchError { error, duration } => {
+                events.insert(format!("batch_error_{}", error));
+                events.insert(format!("batch_error_duration_{:?}", duration));
             }
         }
 

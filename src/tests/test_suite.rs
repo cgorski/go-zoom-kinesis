@@ -750,7 +750,8 @@ use anyhow::Result;
 
         // Verify each record had exactly 3 failed attempts (0,1,2) before success
         for sequence in ["seq-1", "seq-2", "seq-3"] {
-            let attempts = attempt_counts.get(sequence).expect("Missing attempts for sequence");
+            let attempts = attempt_counts.get(sequence)
+                .ok_or_else(|| anyhow::anyhow!("No attempts found for sequence {}", sequence))?;
 
             // Should have exactly 3 failed attempts
             let failed_attempts: Vec<_> = attempts.iter()
@@ -785,15 +786,19 @@ use anyhow::Result;
             "Expected all 3 records to eventually succeed"
         );
 
-        // Verify checkpoint behavior
-        let checkpoint_events: Vec<_> = events.iter()
+        // Verify checkpoint behavior - look for RecordSuccess events with checkpoint_success
+        let checkpoint_successes: Vec<_> = events.iter()
             .filter(|e| matches!(
             e.event_type,
-            ProcessingEventType::Checkpoint { success: true, .. }
+            ProcessingEventType::RecordSuccess { checkpoint_success: true, .. }
         ))
             .collect();
 
-        assert!(!checkpoint_events.is_empty(), "Should have successful checkpoints");
+        assert!(!checkpoint_successes.is_empty(),
+                "Should have successful checkpoints. Found {} checkpoint successes in {} total events",
+                checkpoint_successes.len(),
+                events.len()
+        );
 
         // Verify batch completion
         let batch_completes: Vec<_> = events.iter()
@@ -803,7 +808,11 @@ use anyhow::Result;
         ))
             .collect();
 
-        assert!(!batch_completes.is_empty(), "Should have successful batch completion");
+        assert!(!batch_completes.is_empty(),
+                "Should have successful batch completion. Found {} batch completes in {} total events",
+                batch_completes.len(),
+                events.len()
+        );
 
         // Clean shutdown
         tx.send(true)?;

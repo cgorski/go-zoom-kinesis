@@ -11,14 +11,14 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Default)]
 pub struct ProcessingMetrics {}
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub struct BatchMetrics {
+    pub total_records: usize,
     pub successful_count: usize,
     pub failed_count: usize,
     pub processing_duration: Duration,
-    pub checkpoint_successes: usize,
-    pub checkpoint_failures: usize,
+    pub has_more: bool,
 }
 
 /// Holds aggregated metrics for a single shard
@@ -173,6 +173,30 @@ impl MetricsAggregator {
                     failed = failed_count,
                     duration_ms = ?duration.as_millis(),
                     "Batch processing completed"
+                );
+            }
+
+            ProcessingEventType::BatchStart { timestamp: _ } => {
+                // Just update the last activity timestamp
+                shard_metrics.last_updated = Instant::now();
+            }
+
+            ProcessingEventType::BatchMetrics { metrics } => {
+                // Update metrics from batch processing
+                shard_metrics.records_processed += metrics.successful_count as u64;
+                shard_metrics.records_failed += metrics.failed_count as u64;
+                shard_metrics.processing_time += metrics.processing_duration;
+            }
+
+            ProcessingEventType::BatchError { error, duration } => {
+                shard_metrics.hard_errors += 1;
+                shard_metrics.processing_time += duration;
+
+                warn!(
+                    shard_id = %event.shard_id,
+                    error = %error,
+                    duration_ms = ?duration.as_millis(),
+                    "Batch processing failed"
                 );
             }
 
