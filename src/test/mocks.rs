@@ -1,4 +1,4 @@
-use crate::processor::RecordMetadata;
+use crate::processor::{CheckpointMetadata, RecordMetadata};
 use crate::{
     client::KinesisClientTrait, error::ProcessingError, processor::RecordProcessor, retry::Backoff,
     store::CheckpointStore, ProcessorConfig,
@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::debug;
+use crate::error::BeforeCheckpointError;
 
 /// Mock Kinesis client for testing
 
@@ -175,6 +176,8 @@ pub struct MockRecordProcessor {
     expected_attempts: Arc<RwLock<HashMap<String, u32>>>,
     config: Arc<RwLock<Option<ProcessorConfig>>>,
     processing_times: Arc<RwLock<HashMap<String, Duration>>>,
+    before_checkpoint_results: Arc<RwLock<VecDeque<Result<(), BeforeCheckpointError>>>>,
+
 }
 impl Default for MockRecordProcessor {
     fn default() -> Self {
@@ -197,6 +200,7 @@ impl MockRecordProcessor {
             expected_attempts: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(None)),
             processing_times: Arc::new(RwLock::new(HashMap::new())),
+            before_checkpoint_results: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
@@ -421,14 +425,15 @@ impl MockRecordProcessor {
         }
     }
 }
-
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {
+    type Item = Record;  // We'll store the full record as our processed item
+
     async fn process_record<'a>(
         &self,
         record: &'a Record,
-        _metadata: RecordMetadata<'a>, // Just ignore the metadata parameter
-    ) -> std::result::Result<(), ProcessingError> {
+        _metadata: RecordMetadata<'a>,
+    ) -> std::result::Result<Option<Self::Item>, ProcessingError> {
         let start_time = Instant::now();
 
         // Check for configured delay
@@ -484,7 +489,7 @@ impl RecordProcessor for MockRecordProcessor {
                         Some(error.clone()),
                         duration,
                     )
-                    .await;
+                        .await;
                     return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
@@ -497,7 +502,7 @@ impl RecordProcessor for MockRecordProcessor {
                             Some(error.clone()),
                             duration,
                         )
-                        .await;
+                            .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     } else {
                         let error = format!(
@@ -511,7 +516,7 @@ impl RecordProcessor for MockRecordProcessor {
                             Some(error.clone()),
                             duration,
                         )
-                        .await;
+                            .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     }
                 }
@@ -526,7 +531,20 @@ impl RecordProcessor for MockRecordProcessor {
         self.record_attempt(&sequence, true, current_attempts as u32, None, duration)
             .await;
 
-        Ok(())
+        Ok(Some(record.clone()))  // Return the record as our processed item
+    }
+
+    async fn before_checkpoint(
+        &self,
+        _processed_items: Vec<Self::Item>,
+        _metadata: CheckpointMetadata<'_>,
+    ) -> std::result::Result<(), BeforeCheckpointError> {
+        // Add mock behavior for before_checkpoint if needed
+        if let Some(result) = self.before_checkpoint_results.write().await.pop_front() {
+            result
+        } else {
+            Ok(())
+        }
     }
 }
 /// Mock checkpoint store for testing

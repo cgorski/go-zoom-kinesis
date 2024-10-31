@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use tokio::time::Instant;
 
 use crate::client::KinesisClientError;
-use crate::error::ProcessingError;
+use crate::error::{BeforeCheckpointError, ProcessingError};
 use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ShardEventType};
 use crate::{
     client::KinesisClientTrait,
@@ -22,7 +22,7 @@ use crate::{
     store::CheckpointStore,
 };
 use async_trait::async_trait;
-use aws_sdk_kinesis::types::{Record, ShardIteratorType};
+use aws_sdk_kinesis::types::{Record, SequenceNumberRange, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -33,22 +33,22 @@ use tracing::{error, info, trace, warn};
 /// Trait for implementing record processing logic
 ///
 /// Implementors should handle the business logic for processing individual records
-/// and indicate success/failure through the return type. Additional context about
+/// and return processed data through the associated Item type. Additional context about
 /// the record and its processing state is provided through the metadata parameter.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use go_zoom_kinesis::{RecordProcessor};
-/// use go_zoom_kinesis::processor::RecordMetadata;
-/// use go_zoom_kinesis::error::ProcessingError;
+/// use go_zoom_kinesis::processor::{RecordMetadata, CheckpointMetadata};
+/// use go_zoom_kinesis::error::{ProcessingError, BeforeCheckpointError};
 /// use aws_sdk_kinesis::types::Record;
 /// use tracing::warn;
 ///
 /// // Example data processing function
-/// async fn process_data(data: &[u8]) -> anyhow::Result<()> {
+/// async fn process_data(data: &[u8]) -> anyhow::Result<String> {
 ///     // Simulate some data processing
-///     Ok(())
+///     Ok(String::from_utf8_lossy(data).to_string())
 /// }
 ///
 /// #[derive(Clone)]
@@ -56,63 +56,83 @@ use tracing::{error, info, trace, warn};
 ///
 /// #[async_trait::async_trait]
 /// impl RecordProcessor for MyProcessor {
+///     type Item = String;
+///
 ///     async fn process_record<'a>(
 ///         &self,
 ///         record: &'a Record,
 ///         metadata: RecordMetadata<'a>,
-///     ) -> std::result::Result<(), ProcessingError> {
-///         // Log retry attempts
-///         if metadata.attempt_number() > 1 {
-///             warn!(
-///                 shard_id = %metadata.shard_id(),
-///                 sequence = %metadata.sequence_number(),
-///                 attempt = metadata.attempt_number(),
-///                 "Retrying record processing"
-///             );
-///         }
-///
+///     ) -> std::result::Result<Option<Self::Item>, ProcessingError> {
 ///         // Process record data
 ///         let data = record.data().as_ref();
 ///
 ///         match process_data(data).await {
-///             Ok(_) => Ok(()),
+///             Ok(processed) => Ok(Some(processed)),
 ///             Err(e) => {
 ///                 // Use metadata for detailed error context
 ///                 warn!(
 ///                     shard_id = %metadata.shard_id(),
 ///                     sequence = %metadata.sequence_number(),
-///                     attempt = metadata.attempt_number(),
 ///                     error = %e,
 ///                     "Processing failed"
 ///                 );
-///                 Err(ProcessingError::soft(e)) // Will be retried
+///                 Err(ProcessingError::soft(e)) // Will be retried forever
 ///             }
 ///         }
+///     }
+///
+///     async fn before_checkpoint(
+///         &self,
+///         processed_items: Vec<Self::Item>,
+///         metadata: CheckpointMetadata<'_>,
+///     ) -> std::result::Result<(), BeforeCheckpointError> {
+///         // Optional validation before checkpointing
+///         if processed_items.is_empty() {
+///             return Err(BeforeCheckpointError::soft(
+///                 anyhow::anyhow!("No items to checkpoint")
+///             )); // Will retry before_checkpoint
+///         }
+///         Ok(())
 ///     }
 /// }
 /// ```
 ///
+/// # Type Parameters
+///
+/// * `Item` - The type of data produced by processing records
+///
+/// # Record Processing
+///
+/// The `process_record` method returns:
+/// * `Ok(Some(item))` - Processing succeeded and produced an item
+/// * `Ok(None)` - Processing succeeded but produced no item
+/// * `Err(ProcessingError::SoftFailure)` - Temporary failure, will retry forever
+/// * `Err(ProcessingError::HardFailure)` - Permanent failure, skip record
+///
+/// # Checkpoint Validation
+///
+/// The `before_checkpoint` method allows validation before checkpointing and returns:
+/// * `Ok(())` - Proceed with checkpoint
+/// * `Err(BeforeCheckpointError::SoftError)` - Retry before_checkpoint
+/// * `Err(BeforeCheckpointError::HardError)` - Stop trying before_checkpoint but proceed with checkpoint
+///
 /// # Metadata Access
 ///
-/// The `metadata` parameter provides access to:
+/// The `RecordMetadata` parameter provides:
 /// * `shard_id()` - ID of the shard this record came from
 /// * `sequence_number()` - Sequence number of the record
 /// * `approximate_arrival_timestamp()` - When the record arrived in Kinesis
 /// * `partition_key()` - Partition key used for the record
 /// * `explicit_hash_key()` - Optional explicit hash key
-/// * `attempt_number()` - Current processing attempt number (starts at 1)
 ///
-/// # Error Handling
-///
-/// Return values indicate:
-/// * `Ok(())` - Processing succeeded
-/// * `Err(ProcessingError::SoftFailure)` - Temporary failure, will be retried
-/// * `Err(ProcessingError::HardFailure)` - Permanent failure, will not be retried
-///
-/// The processor will automatically handle retries for soft failures up to the
-/// configured maximum retry count.
+/// The `CheckpointMetadata` parameter provides:
+/// * `shard_id` - ID of the shard being checkpointed
+/// * `sequence_number` - Sequence number being checkpointed
 #[async_trait]
 pub trait RecordProcessor: Send + Sync {
+    /// The type of data produced by processing records
+    type Item : Send + Clone + 'static;
+
     /// Process a single record from the Kinesis stream
     ///
     /// # Arguments
@@ -122,16 +142,36 @@ pub trait RecordProcessor: Send + Sync {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` if processing succeeded
-    /// * `Err(ProcessingError::SoftFailure)` for retriable errors
-    /// * `Err(ProcessingError::HardFailure)` for permanent failures
+    /// * `Ok(Some(item))` if processing succeeded and produced an item
+    /// * `Ok(None)` if processing succeeded but produced no item
+    /// * `Err(ProcessingError::SoftFailure)` for retriable errors (retries forever)
+    /// * `Err(ProcessingError::HardFailure)` for permanent failures (skips record)
     async fn process_record<'a>(
         &self,
         record: &'a Record,
         metadata: RecordMetadata<'a>,
-    ) -> std::result::Result<(), ProcessingError>;
-}
+    ) -> std::result::Result<Option<Self::Item>, ProcessingError>;
 
+    /// Validate processed items before checkpointing
+    ///
+    /// # Arguments
+    ///
+    /// * `processed_items` - Successfully processed items from the batch
+    /// * `metadata` - Information about the checkpoint operation
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` to proceed with checkpoint
+    /// * `Err(BeforeCheckpointError::SoftError)` to retry before_checkpoint
+    /// * `Err(BeforeCheckpointError::HardError)` to stop trying before_checkpoint
+    async fn before_checkpoint(
+        &self,
+        _processed_items: Vec<Self::Item>,
+        _metadata: CheckpointMetadata<'_>,
+    ) -> std::result::Result<(), BeforeCheckpointError> {
+        Ok(()) // Default implementation does nothing
+    }
+}
 /// Metadata associated with a Kinesis record during processing
 ///
 /// This struct provides access to record metadata through reference-based accessors,
@@ -221,6 +261,62 @@ impl<'a> RecordMetadata<'a> {
     /// for each retry.
     pub fn attempt_number(&self) -> u32 {
         self.attempt_number
+    }
+
+}
+
+/// Metadata associated with a checkpoint operation
+///
+/// This struct provides access to checkpoint metadata through reference-based accessors,
+/// providing context about the checkpoint operation such as shard ID and sequence number.
+///
+/// # Examples
+///
+/// ```rust
+/// use go_zoom_kinesis::processor::CheckpointMetadata;
+///
+/// fn validate_checkpoint(metadata: &CheckpointMetadata) {
+///     println!("Checkpointing shard {} at sequence {}",
+///         metadata.shard_id(),
+///         metadata.sequence_number()
+///     );
+///
+///     // Perform checkpoint validation
+///     if metadata.sequence_number().starts_with("49579") {
+///         println!("Checkpoint at expected sequence range");
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CheckpointMetadata<'a> {
+    /// ID of the shard being checkpointed
+    shard_id: &'a str,
+    /// Sequence number being checkpointed
+    sequence_number: &'a str,
+}
+
+impl<'a> CheckpointMetadata<'a> {
+    /// Creates a new checkpoint metadata instance
+    ///
+    /// # Arguments
+    ///
+    /// * `shard_id` - ID of the shard being checkpointed
+    /// * `sequence_number` - Sequence number being checkpointed
+    pub(crate) fn new(shard_id: &'a str, sequence_number: &'a str) -> Self {
+        Self {
+            shard_id,
+            sequence_number,
+        }
+    }
+
+    /// Gets the ID of the shard being checkpointed
+    pub fn shard_id(&self) -> &str {
+        self.shard_id
+    }
+
+    /// Gets the sequence number being checkpointed
+    pub fn sequence_number(&self) -> &str {
+        self.sequence_number
     }
 }
 
@@ -895,42 +991,86 @@ where
             last_successful_sequence: None,
         };
 
+        let mut processed_items = Vec::new();
         let batch_start = Instant::now();
 
+        let mut attempt_number = 0;
+        // Process records and collect results
         for record in records {
             let sequence = record.sequence_number().to_string();
 
-            if !state.failure_tracker.should_process(&sequence) {
-                debug!(
-                    shard_id = %shard_id,
-                    sequence = %sequence,
-                    "Skipping previously failed record"
-                );
-                continue;
-            }
+            // Keep trying on soft failures
+            loop {
 
-            state.mark_sequence_pending(sequence.clone());
-
-            match Self::process_record_with_retries(ctx, record, shard_id, shutdown_rx).await? {
-                true => {
-                    state.mark_sequence_complete(sequence.clone());
-                    result.successful_records.push(sequence.clone());
-                    result.last_successful_sequence = Some(sequence);
-                }
-                false => {
-                    state.failure_tracker.mark_failed(&sequence);
-                    result.failed_records.push(sequence);
+                match ctx.processor.process_record(record, RecordMetadata::new(&record, shard_id.to_string(), attempt_number )).await {
+                    Ok(Some(item)) => {
+                        processed_items.push(item);
+                        result.successful_records.push(sequence.clone());
+                        result.last_successful_sequence = Some(sequence);
+                        break;
+                    }
+                    Ok(None) => {
+                        result.successful_records.push(sequence.clone());
+                        result.last_successful_sequence = Some(sequence);
+                        break;
+                    }
+                    Err(ProcessingError::SoftFailure(e)) => {
+                        warn!(
+                        shard_id = %shard_id,
+                        sequence = %sequence,
+                        error = %e,
+                        "Soft failure processing record, retrying"
+                    );
+                        attempt_number += 1;
+                        continue; // Retry this record
+                    }
+                    Err(ProcessingError::HardFailure(e)) => {
+                        warn!(
+                        shard_id = %shard_id,
+                        sequence = %sequence,
+                        error = %e,
+                        "Hard failure processing record, skipping"
+                    );
+                        result.failed_records.push(sequence);
+                        break;
+                    }
                 }
             }
         }
 
-        ctx.send_monitoring_event(ProcessingEvent::batch_complete(
-            shard_id.to_string(),
-            result.successful_records.len(),
-            result.failed_records.len(),
-            batch_start.elapsed(),
-        ))
-        .await;
+        // Try before_checkpoint if we have items
+        if !processed_items.is_empty() {
+            if let Some(last_sequence) = &result.last_successful_sequence {
+                let metadata = CheckpointMetadata {
+                    shard_id,
+                    sequence_number: last_sequence,
+                };
+
+                loop {
+                    match ctx.processor.before_checkpoint(processed_items.clone(), metadata.clone()).await {
+                        Ok(()) => {
+                            break; // Proceed with checkpoint
+                        }
+                        Err(BeforeCheckpointError::SoftError(e)) => {
+                            warn!(
+                            shard_id = %shard_id,
+                            error = %e,
+                            "Soft error in before_checkpoint, retrying"
+                        );
+                            continue; // Retry before_checkpoint
+                        }
+                        Err(BeforeCheckpointError::HardError(e)) => {
+                            warn!(
+                            shard_id = %shard_id,
+                            error = %e,
+                            "Hard error in before_checkpoint, proceeding without further before_checkpoint attempts"
+                        );
+                            break; // Stop trying before_checkpoint, proceed with checkpoint
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(result)
     }

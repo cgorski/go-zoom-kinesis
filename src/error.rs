@@ -228,3 +228,23 @@ impl ProcessingError {
         ProcessingError::HardFailure(err.into())
     }
 }
+
+// In src/error.rs
+#[derive(Debug, Error)]
+pub enum BeforeCheckpointError {
+    #[error("Soft error (retriable): {0}")]
+    SoftError(#[source] anyhow::Error),
+
+    #[error("Hard error (non-retriable): {0}")]
+    HardError(#[source] anyhow::Error),
+}
+
+impl BeforeCheckpointError {
+    pub fn soft(err: impl Into<anyhow::Error>) -> Self {
+        BeforeCheckpointError::SoftError(err.into())
+    }
+
+    pub fn hard(err: impl Into<anyhow::Error>) -> Self {
+        BeforeCheckpointError::HardError(err.into())
+    }
+}
