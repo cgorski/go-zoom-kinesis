@@ -158,7 +158,7 @@
 //! # DynamoDB Checkpoint Store
 //!
 //! ```rust,no_run
-//!use go_zoom_kinesis::store::DynamoDbCheckpointStore;
+//! use go_zoom_kinesis::store::DynamoDbCheckpointStore;
 //!
 //!
 //! async fn example() -> anyhow::Result<()> {
@@ -181,8 +181,9 @@ pub mod client;
 
 // Make test utilities available for integration tests
 pub mod monitoring;
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub mod test;
+#[cfg(test)]
 mod tests;
 
 pub use error::{ProcessorError, Result};
@@ -194,8 +195,8 @@ pub use crate::processor::RecordProcessor;
 pub use crate::store::CheckpointStore;
 
 // Re-export implementations
-#[cfg(feature = "memory-store")]
+
 pub use crate::store::memory::InMemoryCheckpointStore;
 
-#[cfg(feature = "dynamodb-store")]
+
 pub use crate::store::dynamodb::DynamoDbCheckpointStore;

@@ -41,14 +41,14 @@ use crate::ExponentialBackoff;
 use anyhow::Context;
 use std::time::Duration;
 use tracing::warn;
-#[cfg(feature = "dynamodb-store")]
+
 use {
     crate::store::CheckpointStore,
     async_trait::async_trait,
     aws_sdk_dynamodb::{types::AttributeValue, Client as DynamoClient},
     tracing::{debug, instrument, trace},
 };
-#[cfg(feature = "dynamodb-store")]
+
 #[derive(Debug, Clone)]
 pub struct DynamoDbCheckpointStore {
     client: DynamoClient,
@@ -58,7 +58,7 @@ pub struct DynamoDbCheckpointStore {
     backoff: ExponentialBackoff,
 }
 
-#[cfg(feature = "dynamodb-store")]
+
 impl DynamoDbCheckpointStore {
     pub fn builder() -> DynamoDbCheckpointStoreBuilder {
         DynamoDbCheckpointStoreBuilder::new()
@@ -77,7 +77,7 @@ impl DynamoDbCheckpointStore {
     }
 }
 
-#[cfg(feature = "dynamodb-store")]
+
 #[async_trait]
 impl CheckpointStore for DynamoDbCheckpointStore {
     #[instrument(skip(self), fields(table = %self.table_name, prefix = %self.key_prefix))]

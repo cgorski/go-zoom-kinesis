@@ -6,7 +6,6 @@ use std::collections::HashMap;
 #[allow(unused_imports)]
 use tokio::time::Duration;
 
-#[cfg(feature = "dynamodb-store")]
 pub mod dynamodb;
 pub mod memory;
 
@@ -20,7 +19,6 @@ pub trait CheckpointStore: Send + Sync {
     async fn save_checkpoint(&self, shard_id: &str, sequence_number: &str) -> anyhow::Result<()>;
 }
 
-#[cfg(feature = "test-utils")]
 pub trait CheckpointStoreTestExt: CheckpointStore {
     /// Get the timeout for checkpoint operations (for testing)
     fn timeout(&self) -> Duration {
@@ -37,10 +35,10 @@ pub trait CheckpointStoreTestExt: CheckpointStore {
     }
 }
 
-#[cfg(feature = "test-utils")]
+
 impl<T: CheckpointStore> CheckpointStoreTestExt for T {}
 
 // Re-export implementations
-#[cfg(feature = "dynamodb-store")]
+
 pub use dynamodb::DynamoDbCheckpointStore;
 pub use memory::InMemoryCheckpointStore;

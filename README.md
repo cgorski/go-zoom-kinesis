@@ -259,34 +259,10 @@ Utc::now() - chrono::Duration::hours(1)
 };
 ```
 
-## Feature Flags 🚳
-
-```toml
-[dependencies]
-go-zoom-kinesis = { version = "0.1.0", features = ["dynamodb-store"] }
-```
-
-Available features:
-- `memory-store` (default): In-memory checkpoint storage
-- `dynamodb-store`: DynamoDB checkpoint storage
-- `test-utils`: Testing utilities and mocks
 
 ## Contributing 😪
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Development
-
-```bash
-# Run tests with all features
-cargo test --all-features
-
-# Run specific test
-cargo test --test integration_tests
-
-# Run with specific features
-cargo test --features "dynamodb-store test-utils"
-```
 
 ## License 📒
 

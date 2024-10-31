@@ -236,7 +236,7 @@ impl ProcessingEvent {
 }
 
 // Test-only code
-#[cfg(feature = "test-utils")]
+
 #[derive(Debug)]
 pub struct TestMonitoringHarness {
     pub monitoring_rx: mpsc::Receiver<ProcessingEvent>,
@@ -244,7 +244,7 @@ pub struct TestMonitoringHarness {
     event_history: Arc<Mutex<Vec<ProcessingEvent>>>,
 }
 
-#[cfg(feature = "test-utils")]
+
 impl TestMonitoringHarness {
     pub fn new(monitoring_rx: mpsc::Receiver<ProcessingEvent>) -> Self {
         Self {

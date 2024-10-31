@@ -64,7 +64,6 @@ pub trait KinesisClientTrait: Send + Sync {
     ) -> Result<(Vec<Record>, Option<String>), KinesisClientError>;
 }
 
-#[cfg(feature = "test-utils")]
 pub trait KinesisClientTestExt: KinesisClientTrait {
     fn mock_list_shards(
         &self,
@@ -92,7 +91,7 @@ pub trait KinesisClientTestExt: KinesisClientTrait {
     }
 }
 
-#[cfg(feature = "test-utils")]
+
 impl<T: KinesisClientTrait> KinesisClientTestExt for T {}
 
 #[async_trait]
