@@ -2003,12 +2003,18 @@ use super::*;
 
         Ok(())
     }
-
     #[tokio::test]
     async fn test_metadata_retry_counting() -> Result<()> {
+        init_logging();
+        info!("Starting metadata retry counting test");
+
         let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
-            max_retries: Some(2),
+            max_retries: Some(2),  // Means attempts 0, 1, 2 (initial + 2 retries)
+            monitoring: MonitoringConfig {
+                enabled: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -2016,10 +2022,9 @@ use super::*;
         let processor = MockRecordProcessor::new();
         let store = InMemoryCheckpointStore::new();
 
-        // Configure processor to fail twice then succeed
+        // Configure processor to fail on attempts 0 and 1, succeed on attempt 2
         processor
-            .set_failure_sequence("seq-1".to_string(), "soft".to_string(), 3)
-            .await;
+            .set_failure_sequence("seq-1".to_string(), "soft".to_string(), 1)       .await;
 
         // Setup test record
         client
@@ -2031,23 +2036,95 @@ use super::*;
             .await;
 
         let test_record = TestUtils::create_test_record("seq-1", b"test-data");
-        client.mock_get_records(Ok((vec![test_record], None))).await;
+        client
+            .mock_get_records(Ok((vec![test_record], None)))
+            .await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) =
+        let (processor_instance, mut monitoring_rx) =
             KinesisProcessor::new(config, processor.clone(), client, store);
 
-        // Run processor
-        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
+        // Run processor with timeout
+        let handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        tx.send(true).map_err(|e| {
-            ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown signal: {}", e))
-        })?;
-        processor_handle.await??;
+        // Collect monitoring events to verify attempt sequence
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
 
-        // Verify attempt counts
-        assert_eq!(processor.get_failure_attempts("seq-1").await, 3);
+        // Debug print events
+        println!("\nReceived Events:");
+        for event in &events {
+            println!("Event: {:?}", event);
+        }
+
+        // Verify attempt sequence through monitoring events
+        let mut seen_attempts = HashSet::new();
+        for event in &events {
+            if let ProcessingEventType::RecordAttempt {
+                sequence_number,
+                attempt_number,
+                success,
+                ..
+            } = &event.event_type {
+                if sequence_number == "seq-1" {
+                    seen_attempts.insert(*attempt_number);
+                    if *attempt_number < 2 {
+                        assert!(!success, "Attempts 0 and 1 should fail");
+                    } else if *attempt_number == 2 {
+                        assert!(*success, "Attempt 2 should succeed");
+                    }
+                }
+            }
+        }
+
+        // Verify we saw all expected attempts (0, 1, 2)
+        assert!(seen_attempts.contains(&0), "Should see attempt 0");
+        assert!(seen_attempts.contains(&1), "Should see attempt 1");
+        assert!(seen_attempts.contains(&2), "Should see attempt 2");
+
+        // Verify total number of failed attempts
+        let failure_attempts = processor.get_failure_attempts("seq-1").await;
+        assert_eq!(
+            failure_attempts,
+            2,
+            "Should have exactly 2 failed attempts (attempts 0 and 1)"
+        );
+
+        // Verify final processing succeeded
+        let processed_records = processor.get_processed_records().await;
+        assert_eq!(
+            processed_records.len(),
+            1,
+            "Should have processed the record successfully on final attempt"
+        );
+
+        // Verify event ordering
+        let mut last_attempt = -1;
+        for event in events {
+            if let ProcessingEventType::RecordAttempt {
+                sequence_number,
+                attempt_number,
+                ..
+            } = event.event_type {
+                if sequence_number == "seq-1" {
+                    assert!(
+                        attempt_number as i32 > last_attempt,
+                        "Attempts should be strictly increasing"
+                    );
+                    last_attempt = attempt_number as i32;
+                }
+            }
+        }
+
+        // Clean shutdown
+        tx.send(true).map_err(|e| anyhow::anyhow!("Failed to send shutdown signal: {}", e))?;
+
+        // Wait for processor with timeout
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .map_err(|_| anyhow::anyhow!("Processor timed out"))??
+            .map_err(|e| anyhow::anyhow!("Processor error: {}", e))?;
 
         Ok(())
     }

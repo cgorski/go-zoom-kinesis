@@ -437,12 +437,12 @@ impl MockRecordProcessor {
 }
 #[async_trait]
 impl RecordProcessor for MockRecordProcessor {
-    type Item = Record;  // We'll store the full record as our processed item
+    type Item = Record;
 
     async fn process_record<'a>(
         &self,
         record: &'a Record,
-        _metadata: RecordMetadata<'a>,
+        metadata: RecordMetadata<'a>,
     ) -> std::result::Result<Option<Self::Item>, ProcessingError> {
         let start_time = Instant::now();
 
@@ -452,16 +452,15 @@ impl RecordProcessor for MockRecordProcessor {
         }
 
         let sequence = record.sequence_number().to_string();
-        let current_attempts = {
-            let mut attempts = self.failure_attempts.write().await;
-            let count = attempts
-                .entry(sequence.clone())
-                .and_modify(|e| *e += 1)
-                .or_insert(1);
-            *count
-        };
+        let attempt_number = metadata.attempt_number();  // Use metadata's attempt number directly
 
-        // Process based on failure configuration
+        // Record this attempt
+        {
+            let mut attempts = self.failure_attempts.write().await;
+            attempts.insert(sequence.clone(), attempt_number as usize);
+        }
+
+        // Check if this sequence is configured to fail
         if self.failure_sequences.read().await.contains(&sequence) {
             let failure_type = self
                 .failure_types
@@ -477,16 +476,15 @@ impl RecordProcessor for MockRecordProcessor {
                 .await
                 .get(&sequence)
                 .copied()
-                .unwrap_or(3);
+                .unwrap_or(2);  // Default to 2 (allowing attempts 0, 1, 2)
 
-            let is_final = current_attempts >= max_attempts as usize;
             let duration = start_time.elapsed();
 
             debug!(
                 sequence = %sequence,
-                attempt = current_attempts,
-                "Generating {} failure",
-                failure_type
+                attempt = attempt_number,
+                max_attempts = max_attempts,
+                "Processing attempt"
             );
 
             match failure_type.as_str() {
@@ -495,7 +493,7 @@ impl RecordProcessor for MockRecordProcessor {
                     self.record_attempt(
                         &sequence,
                         false,
-                        current_attempts as u32,
+                        attempt_number,
                         Some(error.clone()),
                         duration,
                     )
@@ -503,32 +501,22 @@ impl RecordProcessor for MockRecordProcessor {
                     return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
-                    if !is_final {
-                        let error = format!("Simulated soft failure for sequence {}", sequence);
-                        self.record_attempt(
-                            &sequence,
-                            false,
-                            current_attempts as u32,
-                            Some(error.clone()),
-                            duration,
-                        )
-                            .await;
-                        return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
-                    } else {
+                    if attempt_number < max_attempts {  // Still have attempts remaining
                         let error = format!(
-                            "Final soft failure for sequence {} after {} attempts",
-                            sequence, current_attempts
+                            "Simulated soft failure for sequence {} (attempt {} of {})",
+                            sequence, attempt_number, max_attempts
                         );
                         self.record_attempt(
                             &sequence,
                             false,
-                            current_attempts as u32,
+                            attempt_number,
                             Some(error.clone()),
                             duration,
                         )
                             .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     }
+                    // We've reached max_attempts, proceed to success
                 }
                 _ => {}
             }
@@ -538,10 +526,23 @@ impl RecordProcessor for MockRecordProcessor {
         let duration = start_time.elapsed();
         self.processed_records.write().await.push(record.clone());
         *self.process_count.write().await += 1;
-        self.record_attempt(&sequence, true, current_attempts as u32, None, duration)
+
+        self.record_attempt(
+            &sequence,
+            true,
+            attempt_number,
+            None,
+            duration,
+        )
             .await;
 
-        Ok(Some(record.clone()))  // Return the record as our processed item
+        debug!(
+            sequence = %sequence,
+            attempt = attempt_number,
+            "Successfully processed record"
+        );
+
+        Ok(Some(record.clone()))
     }
 
     async fn before_checkpoint(
@@ -549,7 +550,6 @@ impl RecordProcessor for MockRecordProcessor {
         _processed_items: Vec<Self::Item>,
         _metadata: CheckpointMetadata<'_>,
     ) -> std::result::Result<(), BeforeCheckpointError> {
-        // Add mock behavior for before_checkpoint if needed
         if let Some(result) = self.before_checkpoint_results.write().await.pop_front() {
             result
         } else {
