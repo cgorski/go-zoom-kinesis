@@ -208,6 +208,16 @@ impl MockRecordProcessor {
         self.processing_times.read().await.clone()
     }
 
+    pub async fn configure_before_checkpoint_behavior(
+        &self,
+        behavior: BeforeCheckpointError,
+    ) {
+        self.before_checkpoint_results
+            .write()
+            .await
+            .push_back(Err(behavior));
+    }
+
     async fn record_attempt(
         &self,
         sequence: &str,
