@@ -104,9 +104,9 @@ pub async fn verify_event_types(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::test::collect_monitoring_events;
-use super::*;
-    use crate::monitoring::IteratorEventType;
+
     use crate::monitoring::MonitoringConfig;
     use crate::monitoring::ShardEventType;
     use tokio::sync::watch;
@@ -174,9 +174,9 @@ use super::*;
 
         // Setup test records with different behaviors
         let records = vec![
-            TestUtils::create_test_record("seq-1", b"success"),      // Immediate success
-            TestUtils::create_test_record("seq-2", b"retry"),        // Retry then success
-            TestUtils::create_test_record("seq-3", b"retry"),        // Retry then success
+            TestUtils::create_test_record("seq-1", b"success"), // Immediate success
+            TestUtils::create_test_record("seq-2", b"retry"),   // Retry then success
+            TestUtils::create_test_record("seq-3", b"retry"),   // Retry then success
         ];
 
         // Configure processor behaviors
@@ -203,9 +203,7 @@ use super::*;
             KinesisProcessor::new(config, processor.clone(), client, store);
 
         // Run processor in background
-        let handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         // Collect events with timeout
         let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(2)).await;
@@ -217,13 +215,18 @@ use super::*;
         }
 
         // Verify event sequence
-        let mut event_sequence = Vec::<String>::new();  // Change to owned Strings
+        let mut event_sequence = Vec::<String>::new(); // Change to owned Strings
         for event in &events {
             match &event.event_type {
-                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Started,
+                    ..
+                } => {
                     event_sequence.push("shard_start".to_string());
                 }
-                ProcessingEventType::RecordSuccess { sequence_number, .. } => {
+                ProcessingEventType::RecordSuccess {
+                    sequence_number, ..
+                } => {
                     event_sequence.push(format!("success_{}", sequence_number));
                 }
                 ProcessingEventType::RecordAttempt {
@@ -232,15 +235,25 @@ use super::*;
                     attempt_number,
                     ..
                 } => {
-                    event_sequence.push(format!("attempt_{}_{}",sequence_number, attempt_number));
+                    event_sequence.push(format!("attempt_{}_{}", sequence_number, attempt_number));
                 }
                 ProcessingEventType::Checkpoint { success: true, .. } => {
                     event_sequence.push("checkpoint_success".to_string());
                 }
-                ProcessingEventType::BatchComplete { successful_count, failed_count, .. } => {
-                    event_sequence.push(format!("batch_complete_{}_{}", successful_count, failed_count));
+                ProcessingEventType::BatchComplete {
+                    successful_count,
+                    failed_count,
+                    ..
+                } => {
+                    event_sequence.push(format!(
+                        "batch_complete_{}_{}",
+                        successful_count, failed_count
+                    ));
                 }
-                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Completed,
+                    ..
+                } => {
                     event_sequence.push("shard_complete".to_string());
                 }
                 _ => {}
@@ -251,26 +264,22 @@ use super::*;
         let required_patterns = vec![
             // Shard lifecycle
             "shard_start",
-
             // First record (immediate success)
             "success_seq-1",
-
             // Second record (retries then success)
             "attempt_seq-2_0",
             "attempt_seq-2_1",
             "attempt_seq-2_2",
             "success_seq-2",
-
             // Third record (retries then success)
             "attempt_seq-3_0",
             "attempt_seq-3_1",
             "attempt_seq-3_2",
             "success_seq-3",
-
             // Completion events
             "checkpoint_success",
-            "batch_complete_3_0",  // All records eventually succeed
-            "shard_complete"
+            "batch_complete_3_0", // All records eventually succeed
+            "shard_complete",
         ];
 
         // Then update the verification to compare strings
@@ -294,36 +303,51 @@ use super::*;
 
         for event in &events {
             match &event.event_type {
-                ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Started,
+                    ..
+                } => {
                     saw_start = true;
                 }
-                ProcessingEventType::RecordSuccess { sequence_number, .. } => {
-                    match sequence_number.as_str() {
-                        "seq-1" => {
-                            assert!(saw_start, "seq-1 success should come after shard start");
-                            saw_seq1 = true;
-                        }
-                        "seq-2" => {
-                            assert!(saw_seq1, "seq-2 success should come after seq-1");
-                            saw_seq2_complete = true;
-                        }
-                        "seq-3" => {
-                            assert!(saw_seq2_complete, "seq-3 success should come after seq-2");
-                            saw_seq3_complete = true;
-                        }
-                        _ => {}
+                ProcessingEventType::RecordSuccess {
+                    sequence_number, ..
+                } => match sequence_number.as_str() {
+                    "seq-1" => {
+                        assert!(saw_start, "seq-1 success should come after shard start");
+                        saw_seq1 = true;
                     }
-                }
+                    "seq-2" => {
+                        assert!(saw_seq1, "seq-2 success should come after seq-1");
+                        saw_seq2_complete = true;
+                    }
+                    "seq-3" => {
+                        assert!(saw_seq2_complete, "seq-3 success should come after seq-2");
+                        saw_seq3_complete = true;
+                    }
+                    _ => {}
+                },
                 ProcessingEventType::Checkpoint { success: true, .. } => {
-                    assert!(saw_seq3_complete, "Checkpoint should come after all records");
+                    assert!(
+                        saw_seq3_complete,
+                        "Checkpoint should come after all records"
+                    );
                     saw_checkpoint = true;
                 }
                 ProcessingEventType::BatchComplete { .. } => {
-                    assert!(saw_checkpoint, "Batch complete should come after checkpoint");
+                    assert!(
+                        saw_checkpoint,
+                        "Batch complete should come after checkpoint"
+                    );
                     saw_batch_complete = true;
                 }
-                ProcessingEventType::ShardEvent { event_type: ShardEventType::Completed, .. } => {
-                    assert!(saw_batch_complete, "Shard complete should come after batch complete");
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Completed,
+                    ..
+                } => {
+                    assert!(
+                        saw_batch_complete,
+                        "Shard complete should come after batch complete"
+                    );
                     saw_shard_complete = true;
                 }
                 _ => {}
@@ -331,9 +355,16 @@ use super::*;
         }
 
         // Verify we saw all major stages
-        assert!(saw_start && saw_seq1 && saw_seq2_complete && saw_seq3_complete &&
-                    saw_checkpoint && saw_batch_complete && saw_shard_complete,
-                "Missing some major event stages");
+        assert!(
+            saw_start
+                && saw_seq1
+                && saw_seq2_complete
+                && saw_seq3_complete
+                && saw_checkpoint
+                && saw_batch_complete
+                && saw_shard_complete,
+            "Missing some major event stages"
+        );
 
         // Clean shutdown
         tx.send(true)?;
@@ -345,54 +376,5 @@ use super::*;
             .map_err(|e| anyhow::anyhow!("Processor error: {}", e))?;
 
         Ok(())
-    }
-    // Helper function to match event types
-    #[allow(clippy::match_like_matches_macro)]
-    fn matches_event_type(
-        event: &ProcessingEventType,
-        expected_type: &str,
-        expected_subtype: &str,
-    ) -> bool {
-        match (event, expected_type, expected_subtype) {
-            (ProcessingEventType::ShardEvent { event_type, .. }, "ShardEvent", subtype) => {
-                match (event_type, subtype) {
-                    (ShardEventType::Started, "Started") => true,
-                    (ShardEventType::Completed, "Completed") => true,
-                    (ShardEventType::Error, "Error") => true,
-                    (ShardEventType::Interrupted, "Interrupted") => true,
-                    _ => false,
-                }
-            }
-            (
-                ProcessingEventType::RecordAttempt {
-                    success,
-                    is_final_attempt,
-                    ..
-                },
-                "RecordAttempt",
-                subtype,
-            ) => match (success, is_final_attempt, subtype) {
-                (true, _, "Success") => true,
-                (false, false, "Retry") => true,
-                (false, true, "Failure") => true,
-                _ => false,
-            },
-            (ProcessingEventType::Iterator { event_type, .. }, "Iterator", subtype) => {
-                match (event_type, subtype) {
-                    (IteratorEventType::Renewed, "Renewed") => true,
-                    (IteratorEventType::Expired, "Expired") => true,
-                    (IteratorEventType::Failed, "Failed") => true,
-                    _ => false,
-                }
-            }
-            (ProcessingEventType::Checkpoint { success, .. }, "Checkpoint", subtype) => {
-                match (success, subtype) {
-                    (true, "Success") => true,
-                    (false, "Failure") => true,
-                    _ => false,
-                }
-            }
-            _ => false,
-        }
     }
 }

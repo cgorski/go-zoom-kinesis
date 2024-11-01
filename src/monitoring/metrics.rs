@@ -11,7 +11,6 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Default)]
 pub struct ProcessingMetrics {}
 
-
 #[derive(Debug, Clone)]
 pub struct BatchMetrics {
     pub total_records: usize,

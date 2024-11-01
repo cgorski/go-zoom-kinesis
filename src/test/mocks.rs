@@ -13,13 +13,13 @@ use std::{
 };
 
 use crate::client::KinesisClientError;
+use crate::error::BeforeCheckpointError;
 use anyhow::Result;
 use parking_lot;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tokio::time::Instant;
 use tracing::debug;
-use crate::error::BeforeCheckpointError;
 
 /// Mock Kinesis client for testing
 
@@ -178,7 +178,6 @@ pub struct MockRecordProcessor {
     processing_times: Arc<RwLock<HashMap<String, Duration>>>,
     pub before_checkpoint_results: Arc<RwLock<VecDeque<Result<(), BeforeCheckpointError>>>>,
     never_complete: Arc<AtomicBool>,
-
 }
 impl Default for MockRecordProcessor {
     fn default() -> Self {
@@ -214,10 +213,7 @@ impl MockRecordProcessor {
         self.processing_times.read().await.clone()
     }
 
-    pub async fn configure_before_checkpoint_behavior(
-        &self,
-        behavior: BeforeCheckpointError,
-    ) {
+    pub async fn configure_before_checkpoint_behavior(&self, behavior: BeforeCheckpointError) {
         self.before_checkpoint_results
             .write()
             .await
@@ -502,7 +498,7 @@ impl RecordProcessor for MockRecordProcessor {
                         Some(error.clone()),
                         duration,
                     )
-                        .await;
+                    .await;
                     return Err(ProcessingError::HardFailure(anyhow::anyhow!(error)));
                 }
                 "soft" => {
@@ -518,7 +514,7 @@ impl RecordProcessor for MockRecordProcessor {
                             Some(error.clone()),
                             duration,
                         )
-                            .await;
+                        .await;
                         return Err(ProcessingError::SoftFailure(anyhow::anyhow!(error)));
                     }
                 }
@@ -541,13 +537,7 @@ impl RecordProcessor for MockRecordProcessor {
         self.processed_records.write().await.push(record.clone());
         *self.process_count.write().await += 1;
 
-        self.record_attempt(
-            &sequence,
-            true,
-            attempt_number,
-            None,
-            duration,
-        )
+        self.record_attempt(&sequence, true, attempt_number, None, duration)
             .await;
 
         debug!(

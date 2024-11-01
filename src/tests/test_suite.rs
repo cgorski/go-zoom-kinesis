@@ -1,13 +1,16 @@
 #[cfg(test)]
 mod tests {
     use crate::test::collect_monitoring_events;
-use anyhow::Result;
+    use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
 
     use crate::client::KinesisClientError;
-    use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType, TestMonitoringHarness};
-    
+    use crate::monitoring::{
+        IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType,
+        TestMonitoringHarness,
+    };
+
     use crate::test::mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor};
     use crate::test::TestUtils;
     use crate::tests::common;
@@ -15,12 +18,11 @@ use anyhow::Result;
     use crate::{
         CheckpointStore, InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig, ProcessorError,
     };
-    
-    
+
     use std::sync::{Arc, Once};
     use std::time::Duration;
     use tokio::time::Instant;
-    
+
     use tracing::warn;
     use tracing::{debug, info};
 
@@ -287,9 +289,18 @@ use anyhow::Result;
         // Configure processor to return a never-completing future
         processor.set_never_complete(true).await;
 
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-        client.mock_get_records(Ok((vec![TestUtils::create_test_record("seq-1", b"test")], None))).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        client
+            .mock_get_records(Ok((
+                vec![TestUtils::create_test_record("seq-1", b"test")],
+                None,
+            )))
+            .await;
 
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let (processor, _) = KinesisProcessor::new(config, processor, client, store);
@@ -629,16 +640,24 @@ use anyhow::Result;
         let records = vec![
             TestUtils::create_test_record("seq-1", b"hard fail"),
             TestUtils::create_test_record("seq-2", b"soft fail"),
-            TestUtils::create_test_record("seq-3", b"succeed")
+            TestUtils::create_test_record("seq-3", b"succeed"),
         ];
 
         // Configure processor behavior
-        processor.configure_failure("seq-1".to_string(), "hard", 1).await; // Hard fail immediately
-        processor.configure_failure("seq-2".to_string(), "soft", 3).await; // Soft fail 3 times then succeed
+        processor
+            .configure_failure("seq-1".to_string(), "hard", 1)
+            .await; // Hard fail immediately
+        processor
+            .configure_failure("seq-2".to_string(), "soft", 3)
+            .await; // Soft fail 3 times then succeed
 
         // Setup mock responses
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
         client.mock_get_records(Ok((records, None))).await;
 
         // Run processor
@@ -646,9 +665,7 @@ use anyhow::Result;
         let (processor_instance, mut monitoring_rx) =
             KinesisProcessor::new(config, processor.clone(), client, store);
 
-        let handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         // Collect events
         let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_secs(1)).await;
@@ -670,32 +687,41 @@ use anyhow::Result;
 
     // Helper functions
     fn count_failures(events: &[ProcessingEvent], seq: &str) -> usize {
-        events.iter()
-            .filter(|e| matches!(
-            &e.event_type,
-            ProcessingEventType::RecordFailure { sequence_number, .. }
-            if sequence_number == seq
-        ))
+        events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.event_type,
+                    ProcessingEventType::RecordFailure { sequence_number, .. }
+                    if sequence_number == seq
+                )
+            })
             .count()
     }
 
     fn count_retries(events: &[ProcessingEvent], seq: &str) -> usize {
-        events.iter()
-            .filter(|e| matches!(
-            &e.event_type,
-            ProcessingEventType::RecordAttempt { sequence_number, success: false, .. }
-            if sequence_number == seq
-        ))
+        events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.event_type,
+                    ProcessingEventType::RecordAttempt { sequence_number, success: false, .. }
+                    if sequence_number == seq
+                )
+            })
             .count()
     }
 
     fn count_successes(events: &[ProcessingEvent], seq: &str) -> usize {
-        events.iter()
-            .filter(|e| matches!(
-            &e.event_type,
-            ProcessingEventType::RecordSuccess { sequence_number, .. }
-            if sequence_number == seq
-        ))
+        events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.event_type,
+                    ProcessingEventType::RecordSuccess { sequence_number, .. }
+                    if sequence_number == seq
+                )
+            })
             .count()
     }
     #[tokio::test]

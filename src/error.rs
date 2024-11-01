@@ -244,7 +244,6 @@ pub enum BeforeCheckpointError {
     HardError(#[source] anyhow::Error),
 }
 
-
 impl BeforeCheckpointError {
     pub fn soft(err: impl Into<anyhow::Error>) -> Self {
         BeforeCheckpointError::SoftError(err.into())

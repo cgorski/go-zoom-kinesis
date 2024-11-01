@@ -1,3 +1,4 @@
+use crate::monitoring::metrics::BatchMetrics;
 #[allow(unused_imports)]
 use std::collections::HashSet;
 #[allow(unused_imports)]
@@ -7,7 +8,6 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, Mutex};
 #[allow(unused_imports)]
 use tracing::debug;
-use crate::monitoring::metrics::BatchMetrics;
 
 /// Configuration for the monitoring system
 #[derive(Debug, Clone)]
@@ -449,7 +449,10 @@ impl TestMonitoringHarness {
                 events.insert(format!("batch_start_{:?}", timestamp));
             }
             ProcessingEventType::BatchMetrics { metrics } => {
-                events.insert(format!("batch_metrics_success_{}", metrics.successful_count));
+                events.insert(format!(
+                    "batch_metrics_success_{}",
+                    metrics.successful_count
+                ));
                 events.insert(format!("batch_metrics_failed_{}", metrics.failed_count));
             }
             ProcessingEventType::BatchError { error, duration } => {

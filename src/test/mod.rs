@@ -7,14 +7,13 @@ use std::sync::Arc;
 
 #[allow(unused_imports)]
 use crate::client::KinesisClientError;
+use crate::monitoring::ProcessingEvent;
 use aws_sdk_kinesis::types::{Record, Shard};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::monitoring::ProcessingEvent;
 
 /// Helper functions for creating test data
 pub struct TestUtils;
-
 
 pub async fn collect_monitoring_events(
     rx: &mut Option<mpsc::Receiver<ProcessingEvent>>,
@@ -24,10 +23,9 @@ pub async fn collect_monitoring_events(
     let start = std::time::Instant::now();
 
     if let Some(receiver) = rx {
-        while let Ok(Some(event)) = tokio::time::timeout(
-            Duration::from_millis(10),
-            receiver.recv()
-        ).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(10), receiver.recv()).await
+        {
             events.push(event);
             if start.elapsed() > timeout {
                 break;
