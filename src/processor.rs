@@ -1252,6 +1252,7 @@ mod tests {
         mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor},
         TestUtils,
     };
+    use std::collections::HashSet;
 
     use std::sync::Once;
 
