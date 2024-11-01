@@ -76,53 +76,47 @@
 //! }
 //! ```
 //!
-//! # Error Handling
-//!
-//! ```rust,no_run
-//!
-//! ```
-//!
 //! # Stream Position Configuration
 //!
 //! ```rust,no_run
 //! use go_zoom_kinesis::{RecordProcessor, error::ProcessingError};
-// use go_zoom_kinesis::processor::RecordMetadata;
-// use aws_sdk_kinesis::types::Record;
-// use async_trait::async_trait;
-// use anyhow::Result;
-//
-// struct MyProcessor;
-//
-// #[async_trait]
-// impl RecordProcessor for MyProcessor {
-//     // Define the associated type - in this case we don't produce any items
-//     type Item = ();
-//
-//     async fn process_record<'a>(
-//         &self,
-//         record: &'a Record,
-//         metadata: RecordMetadata<'a>,
-//     ) -> Result<Option<Self::Item>, ProcessingError> {
-//         match process_data(record).await {
-//             Ok(_) => Ok(None),  // No item produced
-//             Err(e) => {
-//                 // Custom error handling with metadata context
-//                 tracing::error!(
-//                     error = %e,
-//                     shard_id = %metadata.shard_id(),
-//                     attempt = %metadata.attempt_number(),
-//                     "Failed to process record"
-//                 );
-//                 Err(ProcessingError::soft(e)) // Will be retried
-//             }
-//         }
-//     }
-// }
-//
-// // Example processing function
-// async fn process_data(_record: &Record) -> Result<()> {
-//     Ok(())
-// }
+//! use go_zoom_kinesis::processor::RecordMetadata;
+//! use aws_sdk_kinesis::types::Record;
+//! use async_trait::async_trait;
+//! use anyhow::Result;
+//!
+//! struct MyProcessor;
+//!
+//! #[async_trait]
+//! impl RecordProcessor for MyProcessor {
+//!     // Define the associated type - in this case we don't produce any items
+//!     type Item = ();
+//!
+//!     async fn process_record<'a>(
+//!         &self,
+//!         record: &'a Record,
+//!         metadata: RecordMetadata<'a>,
+//!    ) -> Result<Option<Self::Item>, ProcessingError> {
+//!        match process_data(record).await {
+//!             Ok(_) => Ok(None),  // No item produced
+//!             Err(e) => {
+//!                 // Custom error handling with metadata context
+//!                 tracing::error!(
+//!                     error = %e,
+//!                     shard_id = %metadata.shard_id(),
+//!                     attempt = %metadata.attempt_number(),
+//!                     "Failed to process record"
+//!                 );
+//!                 Err(ProcessingError::soft(e)) // Will be retried
+//!             }
+//!         }
+//!     }
+//! }
+//!
+//! // Example processing function
+//! async fn process_data(_record: &Record) -> Result<()> {
+//!    Ok(())
+//! }
 //! ```
 //!
 //! # DynamoDB Checkpoint Store
