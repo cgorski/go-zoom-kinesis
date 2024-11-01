@@ -6,11 +6,10 @@ use crate::error::BeforeCheckpointError;
 use crate::KinesisProcessor;
 use crate::test::TestUtils;
 use crate::ProcessorConfig;
-use super::*;
     use crate::test::mocks::{MockKinesisClient, MockRecordProcessor, MockCheckpointStore};
     use crate::monitoring::{MonitoringConfig, ProcessingEvent, ProcessingEventType};
     use std::time::Duration;
-    use tokio::sync::mpsc;
+    
     use anyhow::Result;
 
     // Helper functions for all tests

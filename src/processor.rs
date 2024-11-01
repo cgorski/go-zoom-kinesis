@@ -8,7 +8,6 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
-use crate::monitoring::ProcessingEventType::BatchMetrics;
 use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -759,7 +758,6 @@ where
         ctx: &ProcessingContext<P, C, S>,
         shard_id: &str,
         records: &[Record],
-        state: &mut ShardProcessingState,
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<BatchProcessingResult> {
         let mut result = BatchProcessingResult {
@@ -1104,7 +1102,7 @@ where
                     return Ok(BatchResult::EndOfShard);
                 }
 
-                let batch_result = Self::process_records(ctx, shard_id, &records, state, shutdown_rx).await?;
+                let batch_result = Self::process_records(ctx, shard_id, &records, shutdown_rx).await?;
 
                 // Handle batch completion
                 if !batch_result.successful_records.is_empty() {
@@ -1292,38 +1290,23 @@ where
 
 /// Tracks the state of shard processing
 struct ShardProcessingState {
-    /// Tracks failed record sequences
-    failure_tracker: FailureTracker,
+
     /// Last successfully processed sequence number
     last_successful_sequence: Option<String>,
-    /// Set of sequence numbers currently being processed
-    pending_sequences: HashSet<String>,
+
 }
 
 impl ShardProcessingState {
     fn new() -> Self {
         Self {
-            failure_tracker: FailureTracker::new(),
+
             last_successful_sequence: None,
-            pending_sequences: HashSet::new(),
+
         }
     }
 
-    /// Mark a sequence as pending processing
-    fn mark_sequence_pending(&mut self, sequence: String) {
-        self.pending_sequences.insert(sequence);
-    }
 
-    /// Mark a sequence as successfully completed
-    fn mark_sequence_complete(&mut self, sequence: String) {
-        debug!(
-            sequence = %sequence,
-            previous = ?self.last_successful_sequence,
-            "Updating last successful sequence"
-        );
-        self.pending_sequences.remove(&sequence);
-        self.last_successful_sequence = Some(sequence);
-    }
+
 }
 
 /// Result of batch processing operations
@@ -1348,7 +1331,7 @@ use super::*;
     };
 
     use std::sync::Once;
-    use tokio::sync::Mutex;
+    
 
     use crate::InMemoryCheckpointStore;
     use tracing_subscriber::EnvFilter;

@@ -1,14 +1,13 @@
 #[cfg(test)]
 mod tests {
     use crate::test::collect_monitoring_events;
-use std::collections::HashMap;
 use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
 
     use crate::client::KinesisClientError;
     use crate::monitoring::{IteratorEventType, MonitoringConfig, ProcessingEvent, ProcessingEventType, TestMonitoringHarness};
-    use crate::processor::InitialPosition;
+    
     use crate::test::mocks::{MockCheckpointStore, MockKinesisClient, MockRecordProcessor};
     use crate::test::TestUtils;
     use crate::tests::common;
@@ -16,12 +15,12 @@ use anyhow::Result;
     use crate::{
         CheckpointStore, InMemoryCheckpointStore, KinesisProcessor, ProcessorConfig, ProcessorError,
     };
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
+    
+    
     use std::sync::{Arc, Once};
     use std::time::Duration;
     use tokio::time::Instant;
-    use tracing::error;
+    
     use tracing::warn;
     use tracing::{debug, info};
 
