@@ -1000,10 +1000,10 @@ where
             if let Some(max_loops) = ctx.config.max_batch_retrieval_loops {
                 if loop_count >= max_loops {
                     debug!(
-                    shard_id = %shard_id,
-                    loop_count = loop_count,
-                    "Reached maximum batch retrieval loops"
-                );
+                        shard_id = %shard_id,
+                        loop_count = loop_count,
+                        "Reached maximum batch retrieval loops"
+                    );
                     break;
                 }
             }
@@ -1044,7 +1044,7 @@ where
                         IteratorEventType::Expired,
                         None,
                     ))
-                        .await;
+                    .await;
 
                     let new_iterator = Self::get_initial_iterator(
                         ctx,
@@ -1052,14 +1052,14 @@ where
                         &state.last_successful_sequence,
                         shutdown_rx,
                     )
-                        .await?;
+                    .await?;
 
                     ctx.send_monitoring_event(ProcessingEvent::iterator(
                         shard_id.to_string(),
                         IteratorEventType::Renewed,
                         None,
                     ))
-                        .await;
+                    .await;
 
                     return Ok(BatchResult::Continue(new_iterator));
                 }
@@ -1069,7 +1069,7 @@ where
                         ShardEventType::Error,
                         Some(e.to_string()),
                     ))
-                        .await;
+                    .await;
 
                     return Err(e);
                 }
@@ -1077,13 +1077,8 @@ where
         }
 
         if !accumulated_records.is_empty() {
-            let batch_result = Self::process_records(
-                ctx,
-                shard_id,
-                &accumulated_records,
-                shutdown_rx,
-            )
-                .await?;
+            let batch_result =
+                Self::process_records(ctx, shard_id, &accumulated_records, shutdown_rx).await?;
 
             ctx.send_monitoring_event(ProcessingEvent::batch_complete(
                 shard_id.to_string(),
@@ -1091,7 +1086,7 @@ where
                 batch_result.failed_records.len(),
                 batch_start.elapsed(),
             ))
-                .await;
+            .await;
 
             Ok(BatchResult::Continue(current_iterator))
         } else {
@@ -1310,7 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_basic_flow() -> anyhow::Result<()> {
-        let  config = ProcessorConfig {
+        let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1322,8 +1317,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
-            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
-            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
+            minimum_batch_retrieval_time: Duration::from_millis(50), // Short time for tests
+            max_batch_retrieval_loops: Some(2),                      // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1362,7 +1357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_error_handling() -> anyhow::Result<()> {
-        let  config = ProcessorConfig {
+        let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1374,8 +1369,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
-            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
-            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
+            minimum_batch_retrieval_time: Duration::from_millis(50), // Short time for tests
+            max_batch_retrieval_loops: Some(2),                      // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1436,7 +1431,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_checkpoint_recovery() -> anyhow::Result<()> {
-        let  config = ProcessorConfig {
+        let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1448,8 +1443,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
-            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
-            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
+            minimum_batch_retrieval_time: Duration::from_millis(50), // Short time for tests
+            max_batch_retrieval_loops: Some(2),                      // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1495,7 +1490,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_multiple_shards() -> anyhow::Result<()> {
-        let  config = ProcessorConfig {
+        let config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1507,8 +1502,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
-            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
-            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
+            minimum_batch_retrieval_time: Duration::from_millis(50), // Short time for tests
+            max_batch_retrieval_loops: Some(2),                      // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();

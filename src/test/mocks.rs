@@ -163,7 +163,7 @@ impl KinesisClientTrait for MockKinesisClient {
                                 max_retries,
                                 shutdown,
                             )
-                                .await
+                            .await
                         }
                     }
                 }

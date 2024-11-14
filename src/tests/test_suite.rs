@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-use crate::test::collect_monitoring_events;
+    use crate::test::collect_monitoring_events;
     use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
+    use std::collections::HashSet;
 
     use crate::client::KinesisClientError;
     use crate::monitoring::{
@@ -884,7 +884,8 @@ use crate::test::collect_monitoring_events;
         let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         // Collect events for a reasonable duration
-        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
+        let events =
+            collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
 
         // Signal shutdown
         tx.send(true)?;
@@ -901,13 +902,16 @@ use crate::test::collect_monitoring_events;
         );
 
         // Verify we got some records
-        assert!(!processed_records.is_empty(), "Should have processed some records");
+        assert!(
+            !processed_records.is_empty(),
+            "Should have processed some records"
+        );
 
         // Verify we saw batch completion
-        let batch_completes = events.iter().filter(|e| matches!(
-        e.event_type,
-        ProcessingEventType::BatchComplete { .. }
-    )).count();
+        let batch_completes = events
+            .iter()
+            .filter(|e| matches!(e.event_type, ProcessingEventType::BatchComplete { .. }))
+            .count();
 
         assert!(
             batch_completes > 0,
@@ -985,7 +989,8 @@ use crate::test::collect_monitoring_events;
         tokio::time::sleep(Duration::from_millis(250)).await;
 
         // Collect events before shutdown
-        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
+        let events =
+            collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
 
         // Signal shutdown
         tx.send(true)?;
@@ -1015,10 +1020,7 @@ use crate::test::collect_monitoring_events;
         // Verify batch completion events
         let batch_completes: Vec<_> = events
             .iter()
-            .filter(|e| matches!(
-            e.event_type,
-            ProcessingEventType::BatchComplete { .. }
-        ))
+            .filter(|e| matches!(e.event_type, ProcessingEventType::BatchComplete { .. }))
             .collect();
 
         assert!(
@@ -1034,7 +1036,7 @@ use crate::test::collect_monitoring_events;
             stream_name: "test-stream".to_string(),
             batch_size: 10,
             minimum_batch_retrieval_time: Duration::from_millis(100),
-            max_batch_retrieval_loops: Some(2),  // Limit to 2 loops
+            max_batch_retrieval_loops: Some(2), // Limit to 2 loops
             monitoring: MonitoringConfig {
                 enabled: true,
                 channel_size: 100,
@@ -1056,11 +1058,16 @@ use crate::test::collect_monitoring_events;
             .await;
 
         // Setup more batches than max_loops
-        for i in 0..4 {  // 4 batches but max_loops is 2
+        for i in 0..4 {
+            // 4 batches but max_loops is 2
             client
                 .mock_get_records(Ok((
                     TestUtils::create_test_records(5),
-                    if i < 3 { Some(format!("next-iterator-{}", i)) } else { None },
+                    if i < 3 {
+                        Some(format!("next-iterator-{}", i))
+                    } else {
+                        None
+                    },
                 )))
                 .await;
         }
@@ -1080,7 +1087,8 @@ use crate::test::collect_monitoring_events;
         let mut saw_max_loops = false;
 
         while !saw_max_loops && start.elapsed() < timeout {
-            let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
+            let events =
+                collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
             for event in &events {
                 if let ProcessingEventType::BatchComplete { .. } = event.event_type {
                     saw_max_loops = true;
@@ -1115,7 +1123,10 @@ use crate::test::collect_monitoring_events;
         // Print debug information
         println!("Processed {} records", processed_records.len());
         println!("Expected max records: {}", expected_max_records);
-        println!("Max loops setting: {}", config.max_batch_retrieval_loops.unwrap());
+        println!(
+            "Max loops setting: {}",
+            config.max_batch_retrieval_loops.unwrap()
+        );
 
         // Print unique sequence numbers to check for duplicates
         let unique_sequences: HashSet<_> = processed_records

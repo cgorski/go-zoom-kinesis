@@ -29,8 +29,8 @@ pub fn create_test_config() -> ProcessorConfig {
         },
         initial_position: InitialPosition::TrimHorizon,
         prefer_stored_checkpoint: true,
-        minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
-        max_batch_retrieval_loops: Some(2),  // Limited loops for tests
+        minimum_batch_retrieval_time: Duration::from_millis(50), // Short time for tests
+        max_batch_retrieval_loops: Some(2),                      // Limited loops for tests
     }
 }
 
