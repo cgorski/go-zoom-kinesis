@@ -33,6 +33,7 @@ pub struct MockKinesisClient {
     get_records_responses:
         Arc<Mutex<VecDeque<Result<(Vec<Record>, Option<String>), KinesisClientError>>>>,
     iterator_request_count: Arc<AtomicUsize>,
+    get_records_delay: Arc<RwLock<Option<Duration>>>,
 }
 
 impl MockKinesisClient {
@@ -64,6 +65,14 @@ impl MockKinesisClient {
     }
     pub fn new() -> Self {
         Self::default()
+    }
+
+    // Add new constructor for tests that need delays
+    pub fn new_with_delay(delay: Duration) -> Self {
+        Self {
+            get_records_delay: Arc::new(RwLock::new(Some(delay))),
+            ..Default::default()
+        }
     }
 
     pub async fn get_iterator_request_count(&self) -> usize {
@@ -128,6 +137,11 @@ impl KinesisClientTrait for MockKinesisClient {
             return Err(KinesisClientError::Other("Shutdown requested".to_string()));
         }
 
+        // Add delay if configured
+        if let Some(delay) = *self.get_records_delay.read().await {
+            tokio::time::sleep(delay).await;
+        }
+
         // Get response from the queue
         let response = self.get_records_responses.lock().await.pop_front();
 
@@ -136,23 +150,21 @@ impl KinesisClientTrait for MockKinesisClient {
                 match result {
                     Ok(response) => Ok(response),
                     Err(e) => {
-                        current_retry += 1;
-                        if current_retry > max_retries.unwrap_or(3) {
+                        if current_retry >= max_retries.unwrap_or(3) {
                             Err(e)
                         } else {
                             // Simulate backoff
-                            let delay = Duration::from_millis(100 * (2_u64.pow(current_retry - 1)));
-                            tokio::time::sleep(delay).await;
+                            let delay = Duration::from_millis(100 * (2_u64.pow(current_retry)));            tokio::time::sleep(delay).await;
                             // Put the error back in the queue for retry
                             self.get_records_responses.lock().await.push_front(Err(e));
                             self.get_records(
                                 _iterator,
                                 _limit,
-                                current_retry,
+                                current_retry + 1,
                                 max_retries,
                                 shutdown,
                             )
-                            .await
+                                .await
                         }
                     }
                 }
@@ -161,7 +173,6 @@ impl KinesisClientTrait for MockKinesisClient {
         }
     }
 }
-
 #[derive(Debug, Clone)]
 pub struct MockRecordProcessor {
     processed_records: Arc<RwLock<Vec<Record>>>,

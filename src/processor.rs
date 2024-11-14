@@ -354,6 +354,10 @@ pub struct ProcessorConfig {
     pub initial_position: InitialPosition,
     /// Whether to prefer stored checkpoints over initial position
     pub prefer_stored_checkpoint: bool,
+    /// Minimum time to retrieve a batch of records from multiple client batch retrievals
+    pub minimum_batch_retrieval_time: Duration,
+    /// Maximum number of loops to retrieve batches of records
+    pub max_batch_retrieval_loops: Option<u32>,
 }
 
 impl Default for ProcessorConfig {
@@ -370,6 +374,8 @@ impl Default for ProcessorConfig {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
+            minimum_batch_retrieval_time: Duration::from_millis(100),
+            max_batch_retrieval_loops: Some(10),
         }
     }
 }
@@ -985,92 +991,114 @@ where
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<BatchResult> {
         let batch_start = Instant::now();
+        let mut accumulated_records = Vec::new();
+        let mut current_iterator = iterator.to_string();
+        let mut loop_count = 0;
 
-        match Self::get_records_batch(ctx, shard_id, iterator, shutdown_rx).await {
-            Err(ProcessorError::IteratorExpired(_)) => {
-                // Send iterator expired event
-                ctx.send_monitoring_event(ProcessingEvent::iterator(
-                    shard_id.to_string(),
-                    IteratorEventType::Expired,
-                    None,
-                ))
-                .await;
-
-                // Get new iterator
-                let new_iterator = Self::get_initial_iterator(
-                    ctx,
-                    shard_id,
-                    &state.last_successful_sequence,
-                    shutdown_rx,
-                )
-                .await?;
-
-                // Send iterator renewed event
-                ctx.send_monitoring_event(ProcessingEvent::iterator(
-                    shard_id.to_string(),
-                    IteratorEventType::Renewed,
-                    None,
-                ))
-                .await;
-
-                Ok(BatchResult::Continue(new_iterator))
-            }
-            Ok((records, next_iterator)) => {
-                if records.is_empty() && next_iterator.is_none() {
-                    // Send empty batch completion event
-                    ctx.send_monitoring_event(ProcessingEvent::batch_complete(
-                        shard_id.to_string(),
-                        0,
-                        0,
-                        batch_start.elapsed(),
-                    ))
-                    .await;
-
-                    return Ok(BatchResult::EndOfShard);
+        loop {
+            // Check loop count limit
+            if let Some(max_loops) = ctx.config.max_batch_retrieval_loops {
+                if loop_count >= max_loops {
+                    debug!(
+                    shard_id = %shard_id,
+                    loop_count = loop_count,
+                    "Reached maximum batch retrieval loops"
+                );
+                    break;
                 }
+            }
 
-                let batch_result =
-                    Self::process_records(ctx, shard_id, &records, shutdown_rx).await?;
+            match Self::get_records_batch(ctx, shard_id, &current_iterator, shutdown_rx).await {
+                Ok((records, next_iterator)) => {
+                    // Check for end of shard
+                    if records.is_empty() && next_iterator.is_none() {
+                        if accumulated_records.is_empty() {
+                            return Ok(BatchResult::EndOfShard);
+                        }
+                        break;
+                    }
 
-                // Handle batch completion
-                if !batch_result.successful_records.is_empty() {
-                    if let Some(last_sequence) = &batch_result.last_successful_sequence {
-                        debug!(
-                            shard_id = %shard_id,
-                            sequence = %last_sequence,
-                            "Batch had successful records"
-                        );
+                    // Accumulate records
+                    accumulated_records.extend(records);
+
+                    // Update iterator for next loop
+                    if let Some(next) = next_iterator {
+                        current_iterator = next;
+                    } else {
+                        break;
+                    }
+
+                    loop_count += 1;
+
+                    // Check if we should continue retrieving
+                    let elapsed = batch_start.elapsed();
+                    if elapsed < ctx.config.minimum_batch_retrieval_time {
+                        continue;
+                    } else if !accumulated_records.is_empty() {
+                        break;
                     }
                 }
+                Err(ProcessorError::IteratorExpired(_)) => {
+                    ctx.send_monitoring_event(ProcessingEvent::iterator(
+                        shard_id.to_string(),
+                        IteratorEventType::Expired,
+                        None,
+                    ))
+                        .await;
 
-                // Send batch-level monitoring event
-                ctx.send_monitoring_event(ProcessingEvent::batch_complete(
-                    shard_id.to_string(),
-                    batch_result.successful_records.len(),
-                    batch_result.failed_records.len(),
-                    batch_start.elapsed(),
-                ))
-                .await;
+                    let new_iterator = Self::get_initial_iterator(
+                        ctx,
+                        shard_id,
+                        &state.last_successful_sequence,
+                        shutdown_rx,
+                    )
+                        .await?;
 
-                // Continue processing with next iterator
-                match next_iterator {
-                    Some(next) => Ok(BatchResult::Continue(next)),
-                    None => Ok(BatchResult::EndOfShard),
+                    ctx.send_monitoring_event(ProcessingEvent::iterator(
+                        shard_id.to_string(),
+                        IteratorEventType::Renewed,
+                        None,
+                    ))
+                        .await;
+
+                    return Ok(BatchResult::Continue(new_iterator));
+                }
+                Err(e) => {
+                    ctx.send_monitoring_event(ProcessingEvent::shard_event(
+                        shard_id.to_string(),
+                        ShardEventType::Error,
+                        Some(e.to_string()),
+                    ))
+                        .await;
+
+                    return Err(e);
                 }
             }
-            Err(e) => {
-                // Send error event
-                ctx.send_monitoring_event(ProcessingEvent::shard_event(
-                    shard_id.to_string(),
-                    ShardEventType::Error,
-                    Some(e.to_string()),
-                ))
+        }
+
+        if !accumulated_records.is_empty() {
+            let batch_result = Self::process_records(
+                ctx,
+                shard_id,
+                &accumulated_records,
+                shutdown_rx,
+            )
+                .await?;
+
+            ctx.send_monitoring_event(ProcessingEvent::batch_complete(
+                shard_id.to_string(),
+                batch_result.successful_records.len(),
+                batch_result.failed_records.len(),
+                batch_start.elapsed(),
+            ))
                 .await;
 
-                Err(e)
-            }
+            Ok(BatchResult::Continue(current_iterator))
+        } else {
+            Ok(BatchResult::NoRecords)
         }
     }
+
     /// Process a single shard
     ///
     /// # Arguments
@@ -1282,7 +1310,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_basic_flow() -> anyhow::Result<()> {
-        let config = ProcessorConfig {
+        let  config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1294,6 +1322,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
+            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
+            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1332,7 +1362,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_error_handling() -> anyhow::Result<()> {
-        let config = ProcessorConfig {
+        let  config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1344,6 +1374,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
+            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
+            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1404,7 +1436,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_checkpoint_recovery() -> anyhow::Result<()> {
-        let config = ProcessorConfig {
+        let  config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1416,6 +1448,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
+            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
+            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();
@@ -1461,7 +1495,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_processor_multiple_shards() -> anyhow::Result<()> {
-        let config = ProcessorConfig {
+        let  config = ProcessorConfig {
             stream_name: "test-stream".to_string(),
             batch_size: 100,
             api_timeout: Duration::from_secs(1),
@@ -1473,6 +1507,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             initial_position: InitialPosition::TrimHorizon,
             prefer_stored_checkpoint: true,
+            minimum_batch_retrieval_time: Duration::from_millis(50),  // Short time for tests
+            max_batch_retrieval_loops: Some(2),  // Limited loops for tests
         };
 
         let client = MockKinesisClient::new();

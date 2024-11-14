@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::test::collect_monitoring_events;
+    use std::collections::HashSet;
+use crate::test::collect_monitoring_events;
     use anyhow::Result;
     use anyhow::{ensure, Context};
     use aws_sdk_kinesis::types::Record;
@@ -830,6 +831,298 @@ mod tests {
             TOTAL_RECORDS
         );
         assert_eq!(error_count, 0, "Should have no errors");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_retrieval_timing_and_loops() -> anyhow::Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            batch_size: 10,
+            minimum_batch_retrieval_time: Duration::from_millis(200),
+            max_batch_retrieval_loops: Some(3),
+            monitoring: MonitoringConfig {
+                enabled: true,
+                channel_size: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = MockCheckpointStore::new();
+
+        // Setup initial shard and iterator
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        // Setup multiple batches that will be returned
+        // Each with a next iterator to allow for multiple loops
+        for i in 0..3 {
+            client
+                .mock_get_records(Ok((
+                    TestUtils::create_test_records(5),
+                    Some(format!("next-iterator-{}", i)),
+                )))
+                .await;
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, monitoring_rx) =
+            KinesisProcessor::new(config.clone(), processor.clone(), client.clone(), store);
+
+        // Ensure we have a monitoring receiver
+        let mut monitoring_rx = Some(monitoring_rx.expect("Monitoring should be enabled"));
+
+        // Run processor
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
+
+        // Collect events for a reasonable duration
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
+
+        // Signal shutdown
+        tx.send(true)?;
+        processor_handle.await??;
+
+        // Verify processing
+        let processed_records = processor.get_processed_records().await;
+
+        // Verify record count is within expected range
+        assert!(
+            processed_records.len() <= config.max_batch_retrieval_loops.unwrap() as usize * 5,
+            "Should not process more records than max_loops allows: got {}",
+            processed_records.len()
+        );
+
+        // Verify we got some records
+        assert!(!processed_records.is_empty(), "Should have processed some records");
+
+        // Verify we saw batch completion
+        let batch_completes = events.iter().filter(|e| matches!(
+        e.event_type,
+        ProcessingEventType::BatchComplete { .. }
+    )).count();
+
+        assert!(
+            batch_completes > 0,
+            "Should have seen at least one batch completion"
+        );
+
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_minimum_batch_retrieval_duration() -> anyhow::Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            batch_size: 10,
+            minimum_batch_retrieval_time: Duration::from_millis(200),
+            max_batch_retrieval_loops: Some(3),
+            monitoring: MonitoringConfig {
+                enabled: true,
+                channel_size: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Create client with 75ms delay per get_records call
+        let client = MockKinesisClient::new_with_delay(Duration::from_millis(75));
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        // Setup initial shard and iterator
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        // Setup three batches of records
+        for i in 0..3 {
+            client
+                .mock_get_records(Ok((
+                    TestUtils::create_test_records(5),
+                    Some(format!("next-iterator-{}", i)),
+                )))
+                .await;
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, monitoring_rx) =
+            KinesisProcessor::new(config.clone(), processor.clone(), client.clone(), store);
+
+        let mut monitoring_rx = Some(monitoring_rx.expect("Monitoring should be enabled"));
+
+        // Run processor in background
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
+
+        // Wait for first batch to start processing
+        let mut saw_first_record = false;
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(2);
+
+        while !saw_first_record && start.elapsed() < timeout {
+            if processor.get_process_count().await > 0 {
+                saw_first_record = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(saw_first_record, "Processing should have started");
+
+        // Now start timing
+        let timing_start = std::time::Instant::now();
+
+        // Wait for minimum_batch_retrieval_time plus a small buffer
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // Collect events before shutdown
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
+
+        // Signal shutdown
+        tx.send(true)?;
+        processor_handle.await??;
+
+        let elapsed = timing_start.elapsed();
+
+        // Verify timing
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "Processing time ({:?}) should be at least minimum_batch_retrieval_time",
+            elapsed
+        );
+
+        // Verify we got records
+        let processed_records = processor.get_processed_records().await;
+        assert!(
+            !processed_records.is_empty(),
+            "Should have processed some records"
+        );
+
+        // Print debug information
+        println!("Total processing time: {:?}", elapsed);
+        println!("Records processed: {}", processed_records.len());
+        println!("Events received: {}", events.len());
+
+        // Verify batch completion events
+        let batch_completes: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(
+            e.event_type,
+            ProcessingEventType::BatchComplete { .. }
+        ))
+            .collect();
+
+        assert!(
+            !batch_completes.is_empty(),
+            "Should have at least one batch completion event"
+        );
+
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_max_batch_retrieval_loops() -> anyhow::Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            batch_size: 10,
+            minimum_batch_retrieval_time: Duration::from_millis(100),
+            max_batch_retrieval_loops: Some(2),  // Limit to 2 loops
+            monitoring: MonitoringConfig {
+                enabled: true,
+                channel_size: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Create client with small delay
+        let client = MockKinesisClient::new_with_delay(Duration::from_millis(50));
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+
+        // Setup more batches than max_loops
+        for i in 0..4 {  // 4 batches but max_loops is 2
+            client
+                .mock_get_records(Ok((
+                    TestUtils::create_test_records(5),
+                    if i < 3 { Some(format!("next-iterator-{}", i)) } else { None },
+                )))
+                .await;
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, monitoring_rx) =
+            KinesisProcessor::new(config.clone(), processor.clone(), client.clone(), store);
+
+        let mut monitoring_rx = Some(monitoring_rx.expect("Monitoring should be enabled"));
+
+        // Run processor in background
+        let processor_handle = tokio::spawn(async move { processor_instance.run(rx).await });
+
+        // Wait for max loops message or timeout
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(2);
+        let mut saw_max_loops = false;
+
+        while !saw_max_loops && start.elapsed() < timeout {
+            let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(100)).await;
+            for event in &events {
+                if let ProcessingEventType::BatchComplete { .. } = event.event_type {
+                    saw_max_loops = true;
+                    break;
+                }
+            }
+            if !saw_max_loops {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        // Signal shutdown
+        tx.send(true)?;
+        processor_handle.await??;
+
+        // Verify record count
+        let processed_records = processor.get_processed_records().await;
+        let expected_max_records = config.max_batch_retrieval_loops.unwrap() as usize * 5; // 2 loops * 5 records per batch
+
+        assert!(
+            processed_records.len() <= expected_max_records,
+            "Should not process more than max_loops * records_per_batch records, got {} (expected <= {})",
+            processed_records.len(),
+            expected_max_records
+        );
+
+        assert!(
+            !processed_records.is_empty(),
+            "Should have processed some records, got 0"
+        );
+
+        // Print debug information
+        println!("Processed {} records", processed_records.len());
+        println!("Expected max records: {}", expected_max_records);
+        println!("Max loops setting: {}", config.max_batch_retrieval_loops.unwrap());
+
+        // Print unique sequence numbers to check for duplicates
+        let unique_sequences: HashSet<_> = processed_records
+            .iter()
+            .map(|r| r.sequence_number())
+            .collect();
+        println!("Unique sequence numbers: {:?}", unique_sequences);
 
         Ok(())
     }
