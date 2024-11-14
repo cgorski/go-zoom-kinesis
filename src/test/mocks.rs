@@ -131,8 +131,6 @@ impl KinesisClientTrait for MockKinesisClient {
         max_retries: Option<u32>,
         shutdown: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<(Vec<Record>, Option<String>), KinesisClientError> {
-        let mut current_retry = retry_count;
-
         if *shutdown.borrow() {
             return Err(KinesisClientError::Other("Shutdown requested".to_string()));
         }
@@ -142,25 +140,26 @@ impl KinesisClientTrait for MockKinesisClient {
             tokio::time::sleep(delay).await;
         }
 
-        // Get response from the queue
-        let response = self.get_records_responses.lock().await.pop_front();
-
-        match response {
+        match self.get_records_responses.lock().await.pop_front() {
             Some(result) => {
                 match result {
                     Ok(response) => Ok(response),
                     Err(e) => {
-                        if current_retry >= max_retries.unwrap_or(3) {
+                        // Immediately return ExpiredIterator error
+                        if matches!(e, KinesisClientError::ExpiredIterator) {
+                            return Err(e);
+                        }
+
+                        if retry_count >= max_retries.unwrap_or(3) {
                             Err(e)
                         } else {
-                            // Simulate backoff
-                            let delay = Duration::from_millis(100 * (2_u64.pow(current_retry)));            tokio::time::sleep(delay).await;
-                            // Put the error back in the queue for retry
+                            let delay = Duration::from_millis(100 * (2_u64.pow(retry_count)));
+                            tokio::time::sleep(delay).await;
                             self.get_records_responses.lock().await.push_front(Err(e));
                             self.get_records(
                                 _iterator,
                                 _limit,
-                                current_retry + 1,
+                                retry_count + 1,
                                 max_retries,
                                 shutdown,
                             )
@@ -169,7 +168,7 @@ impl KinesisClientTrait for MockKinesisClient {
                     }
                 }
             }
-            None => Ok((vec![], None)), // Default response when queue is empty
+            None => Ok((vec![], None)),
         }
     }
 }
