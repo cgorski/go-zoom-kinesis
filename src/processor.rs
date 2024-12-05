@@ -882,7 +882,7 @@ where
     async fn process_shard(
         &self,
         shard_id: &str,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         info!(shard_id=%shard_id, "Starting shard processing");
         self.context.send_monitoring_event(ProcessingEvent::shard_event(
