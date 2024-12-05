@@ -13,7 +13,6 @@ mod tests {
 
     use anyhow::Result;
 
-
     // 1. Create a static variable that can only be executed once
     static INIT: Once = Once::new();
 
@@ -426,7 +425,6 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
     async fn test_checkpoint_retry_sequence() -> Result<()> {
         init_logging();
@@ -435,32 +433,45 @@ mod tests {
         // Configure a specific sequence of validation responses
         let validation_sequence = vec![
             // First few attempts fail with soft errors
-            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 1"))),
-            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 2"))),
-            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 3"))),
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!(
+                "Not ready yet 1"
+            ))),
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!(
+                "Not ready yet 2"
+            ))),
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!(
+                "Not ready yet 3"
+            ))),
             // Then succeed
             Ok(()),
         ];
 
-        processor.before_checkpoint_results.write().await.extend(validation_sequence);
+        processor
+            .before_checkpoint_results
+            .write()
+            .await
+            .extend(validation_sequence);
 
         // Setup single record processing
         let test_record = TestUtils::create_test_record("test-seq-1", b"test data");
 
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
         client.mock_get_records(Ok((vec![test_record], None))).await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
         let (processor_instance, mut monitoring_rx) =
             KinesisProcessor::new(config, processor.clone(), client, store);
 
-        let handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         // Collect and verify events
-        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
+        let events =
+            collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
 
         println!("\nReceived Events:");
         for event in &events {
@@ -474,17 +485,32 @@ mod tests {
 
         for event in &events {
             match &event.event_type {
-                ProcessingEventType::RecordSuccess { sequence_number, .. } if sequence_number == "test-seq-1" => {
+                ProcessingEventType::RecordSuccess {
+                    sequence_number, ..
+                } if sequence_number == "test-seq-1" => {
                     saw_record_success = true;
-                    assert!(!saw_final_success, "Record success should come before checkpoint success");
+                    assert!(
+                        !saw_final_success,
+                        "Record success should come before checkpoint success"
+                    );
                 }
-                ProcessingEventType::Checkpoint { success: false, error: Some(err), .. } => {
-                    assert!(saw_record_success, "Validation failures should come after record success");
+                ProcessingEventType::Checkpoint {
+                    success: false,
+                    error: Some(err),
+                    ..
+                } => {
+                    assert!(
+                        saw_record_success,
+                        "Validation failures should come after record success"
+                    );
                     validation_failures.push(err.clone());
                 }
                 ProcessingEventType::Checkpoint { success: true, .. } => {
                     saw_final_success = true;
-                    assert!(!validation_failures.is_empty(), "Should see validation failures before success");
+                    assert!(
+                        !validation_failures.is_empty(),
+                        "Should see validation failures before success"
+                    );
                 }
                 _ => {}
             }
@@ -492,8 +518,15 @@ mod tests {
 
         // Verify we saw the expected sequence
         assert!(saw_record_success, "Should have seen record success");
-        assert_eq!(validation_failures.len(), 3, "Should have seen exactly 3 validation failures");
-        assert!(saw_final_success, "Should have seen final checkpoint success");
+        assert_eq!(
+            validation_failures.len(),
+            3,
+            "Should have seen exactly 3 validation failures"
+        );
+        assert!(
+            saw_final_success,
+            "Should have seen final checkpoint success"
+        );
 
         // Verify the validation failure messages
         assert!(validation_failures[0].contains("Not ready yet 1"));

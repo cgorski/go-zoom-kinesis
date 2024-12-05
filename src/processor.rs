@@ -293,7 +293,7 @@ pub struct CheckpointMetadata<'a> {
     sequence_number: &'a str,
 }
 
-impl<'a> CheckpointMetadata<'a> {
+impl CheckpointMetadata<'_> {
     /// Gets the ID of the shard being checkpointed
     pub fn shard_id(&self) -> &str {
         self.shard_id
@@ -381,7 +381,6 @@ impl Default for ProcessorConfig {
 }
 
 /// Internal context holding processor state and dependencies
-
 pub struct ProcessingContext<P, C, S>
 where
     P: RecordProcessor + Send + Sync + 'static,
@@ -499,9 +498,6 @@ where
 ///     processor.run(shutdown_rx).await
 /// }
 /// ```
-
-
-
 pub struct KinesisProcessor<P, C, S>
 where
     P: RecordProcessor + Send + Sync + 'static,
@@ -580,18 +576,27 @@ where
     }
 
     /// Process all shards in the stream
-    async fn process_stream(&self, shutdown_rx: &mut tokio::sync::watch::Receiver<bool>) -> Result<()> {
-        let shards = self.context.client.list_shards(&self.context.config.stream_name).await?;
+    async fn process_stream(
+        &self,
+        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        let shards = self
+            .context
+            .client
+            .list_shards(&self.context.config.stream_name)
+            .await?;
 
-        let semaphore = self.context.config.max_concurrent_shards.map(|limit|
-            Arc::new(Semaphore::new(limit as usize))
-        );
+        let semaphore = self
+            .context
+            .config
+            .max_concurrent_shards
+            .map(|limit| Arc::new(Semaphore::new(limit as usize)));
 
         let mut handles = Vec::new();
 
         for shard in shards {
             let shard_id = shard.shard_id().to_string();
-            let context = self.context.clone();  // Clone the context instead of self
+            let context = self.context.clone(); // Clone the context instead of self
             let semaphore = semaphore.clone();
             let shutdown_rx = shutdown_rx.clone();
 
@@ -603,9 +608,7 @@ where
                 };
 
                 // Create a new processor for this shard using the cloned context
-                let processor = KinesisProcessor {
-                    context,
-                };
+                let processor = KinesisProcessor { context };
 
                 processor.process_shard(&shard_id, shutdown_rx).await
             });
@@ -664,8 +667,6 @@ where
             }
         }
     }
-
-
 
     /// Initialize checkpoint for a shard
     ///
@@ -778,7 +779,14 @@ where
                 }
             }
 
-            match Self::get_records_batch(&self.context, shard_id, &current_iterator, &mut shutdown_rx).await {
+            match Self::get_records_batch(
+                &self.context,
+                shard_id,
+                &current_iterator,
+                &mut shutdown_rx,
+            )
+            .await
+            {
                 Ok((records, next_iterator)) => {
                     if records.is_empty() && next_iterator.is_none() {
                         if accumulated_records.is_empty() {
@@ -803,33 +811,40 @@ where
                     }
                 }
                 Err(ProcessorError::IteratorExpired(_)) => {
-                    self.context.send_monitoring_event(ProcessingEvent::iterator(
-                        shard_id.to_string(),
-                        IteratorEventType::Expired,
-                        None,
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::iterator(
+                            shard_id.to_string(),
+                            IteratorEventType::Expired,
+                            None,
+                        ))
+                        .await;
 
                     let new_iterator = Self::get_initial_iterator(
                         &self.context,
                         shard_id,
                         &state.last_successful_sequence,
                         &mut shutdown_rx,
-                    ).await?;
+                    )
+                    .await?;
 
-                    self.context.send_monitoring_event(ProcessingEvent::iterator(
-                        shard_id.to_string(),
-                        IteratorEventType::Renewed,
-                        None,
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::iterator(
+                            shard_id.to_string(),
+                            IteratorEventType::Renewed,
+                            None,
+                        ))
+                        .await;
 
                     return Ok(BatchResult::Continue(new_iterator));
                 }
                 Err(e) => {
-                    self.context.send_monitoring_event(ProcessingEvent::shard_event(
-                        shard_id.to_string(),
-                        ShardEventType::Error,
-                        Some(e.to_string()),
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::shard_event(
+                            shard_id.to_string(),
+                            ShardEventType::Error,
+                            Some(e.to_string()),
+                        ))
+                        .await;
                     return Err(e);
                 }
             }
@@ -837,21 +852,26 @@ where
 
         if !accumulated_records.is_empty() {
             let batch_processor = BatchProcessor {
-                ctx: self.context.clone()
+                ctx: self.context.clone(),
             };
 
-            match batch_processor.process_batch(shard_id, &accumulated_records, &mut shutdown_rx).await {
+            match batch_processor
+                .process_batch(shard_id, &accumulated_records, &mut shutdown_rx)
+                .await
+            {
                 Ok(batch_result) => {
                     if let Some(seq) = batch_result.last_successful_sequence {
                         state.last_successful_sequence = Some(seq);
                     }
 
-                    self.context.send_monitoring_event(ProcessingEvent::batch_complete(
-                        shard_id.to_string(),
-                        batch_result.successful_records.len(),
-                        batch_result.failed_records.len(),
-                        batch_start.elapsed(),
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::batch_complete(
+                            shard_id.to_string(),
+                            batch_result.successful_records.len(),
+                            batch_result.failed_records.len(),
+                            batch_start.elapsed(),
+                        ))
+                        .await;
 
                     if batch_result.successful_records.is_empty() {
                         Ok(BatchResult::NoRecords)
@@ -860,11 +880,13 @@ where
                     }
                 }
                 Err(e) => {
-                    self.context.send_monitoring_event(ProcessingEvent::batch_error(
-                        shard_id.to_string(),
-                        e.to_string(),
-                        batch_start.elapsed(),
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::batch_error(
+                            shard_id.to_string(),
+                            e.to_string(),
+                            batch_start.elapsed(),
+                        ))
+                        .await;
                     Err(e)
                 }
             }
@@ -885,18 +907,22 @@ where
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
         info!(shard_id=%shard_id, "Starting shard processing");
-        self.context.send_monitoring_event(ProcessingEvent::shard_event(
-            shard_id.to_string(),
-            ShardEventType::Started,
-            None,
-        )).await;
+        self.context
+            .send_monitoring_event(ProcessingEvent::shard_event(
+                shard_id.to_string(),
+                ShardEventType::Started,
+                None,
+            ))
+            .await;
 
         if *shutdown_rx.borrow() {
-            self.context.send_monitoring_event(ProcessingEvent::shard_event(
-                shard_id.to_string(),
-                ShardEventType::Interrupted,
-                Some("Early shutdown".to_string()),
-            )).await;
+            self.context
+                .send_monitoring_event(ProcessingEvent::shard_event(
+                    shard_id.to_string(),
+                    ShardEventType::Interrupted,
+                    Some("Early shutdown".to_string()),
+                ))
+                .await;
             return Self::handle_early_shutdown(shard_id);
         }
 
@@ -905,22 +931,26 @@ where
         let checkpoint = match Self::initialize_checkpoint(&self.context, shard_id).await {
             Ok(cp) => {
                 if let Some(ref checkpoint) = cp {
-                    self.context.send_monitoring_event(ProcessingEvent::checkpoint(
-                        shard_id.to_string(),
-                        checkpoint.clone(),
-                        true,
-                        None,
-                    )).await;
+                    self.context
+                        .send_monitoring_event(ProcessingEvent::checkpoint(
+                            shard_id.to_string(),
+                            checkpoint.clone(),
+                            true,
+                            None,
+                        ))
+                        .await;
                 }
                 cp
             }
             Err(e) => {
-                self.context.send_monitoring_event(ProcessingEvent::checkpoint(
-                    shard_id.to_string(),
-                    "".to_string(),
-                    false,
-                    Some(e.to_string()),
-                )).await;
+                self.context
+                    .send_monitoring_event(ProcessingEvent::checkpoint(
+                        shard_id.to_string(),
+                        "".to_string(),
+                        false,
+                        Some(e.to_string()),
+                    ))
+                    .await;
                 return Err(e);
             }
         };
@@ -930,14 +960,18 @@ where
             shard_id,
             &checkpoint,
             &mut shutdown_rx_clone,
-        ).await {
+        )
+        .await
+        {
             Ok(it) => it,
             Err(e) => {
-                self.context.send_monitoring_event(ProcessingEvent::iterator(
-                    shard_id.to_string(),
-                    IteratorEventType::Failed,
-                    Some(e.to_string()),
-                )).await;
+                self.context
+                    .send_monitoring_event(ProcessingEvent::iterator(
+                        shard_id.to_string(),
+                        IteratorEventType::Failed,
+                        Some(e.to_string()),
+                    ))
+                    .await;
                 return Err(e);
             }
         };
@@ -992,11 +1026,13 @@ where
         }
 
         info!(shard_id=%shard_id, "Completed shard processing");
-        self.context.send_monitoring_event(ProcessingEvent::shard_event(
-            shard_id.to_string(),
-            ShardEventType::Completed,
-            None,
-        )).await;
+        self.context
+            .send_monitoring_event(ProcessingEvent::shard_event(
+                shard_id.to_string(),
+                ShardEventType::Completed,
+                None,
+            ))
+            .await;
         Ok(())
     }
 
@@ -1035,8 +1071,6 @@ enum BatchResult {
     NoRecords,
 }
 
-
-
 struct BatchProcessor<P, C, S>
 where
     P: RecordProcessor + Send + Sync + 'static,
@@ -1051,7 +1085,6 @@ enum RecordProcessingResult<T> {
     Success(String, Option<T>),
     Failed(String),
 }
-
 
 impl BatchProcessingResult {
     fn new() -> Self {
@@ -1084,16 +1117,22 @@ where
                 return Err(ProcessorError::Shutdown);
             }
 
-            let process_result = self.process_single_record(record, shard_id, shutdown_rx).await?;
+            let process_result = self
+                .process_single_record(record, shard_id, shutdown_rx)
+                .await?;
             self.update_batch_result(&mut result, &mut processed_items, process_result);
         }
 
         if !processed_items.is_empty() {
-            match self.handle_checkpointing(shard_id, &result, &processed_items, shutdown_rx).await {
+            match self
+                .handle_checkpointing(shard_id, &result, &processed_items, shutdown_rx)
+                .await
+            {
                 Ok(()) => {
-                    self.send_batch_metrics(shard_id, &result, batch_start.elapsed()).await;
+                    self.send_batch_metrics(shard_id, &result, batch_start.elapsed())
+                        .await;
                     Ok(result)
-                },
+                }
                 Err(e) => {
                     warn!("Checkpoint failed: {}", e);
                     Err(e)
@@ -1156,10 +1195,13 @@ where
         shard_id: &str,
         attempt_number: u32,
     ) -> std::result::Result<Option<P::Item>, ProcessingError> {
-        self.ctx.processor.process_record(
-            record,
-            RecordMetadata::new(record, shard_id.to_string(), attempt_number)
-        ).await
+        self.ctx
+            .processor
+            .process_record(
+                record,
+                RecordMetadata::new(record, shard_id.to_string(), attempt_number),
+            )
+            .await
     }
 
     fn update_batch_result(
@@ -1201,28 +1243,28 @@ where
                 }
 
                 tokio::select! {
-                checkpoint_result = self.try_checkpoint(shard_id, last_sequence, processed_items, &metadata) => {
-                    match checkpoint_result {
-                        Ok(()) => return Ok(()),
-                        Err(BeforeCheckpointError::SoftError(e)) => {
-                            retry_count += 1;
-                            self.ctx.send_monitoring_event(ProcessingEvent::checkpoint(
-                                shard_id.to_string(),
-                                last_sequence.to_string(),
-                                false,
-                                Some(format!("Validation failed (attempt {}): {}", retry_count, e)),
-                            )).await;
-                            continue;
-                        }
-                        Err(BeforeCheckpointError::HardError(e)) => {
-                            return Err(ProcessorError::CheckpointError(e.to_string()));
+                    checkpoint_result = self.try_checkpoint(shard_id, last_sequence, processed_items, &metadata) => {
+                        match checkpoint_result {
+                            Ok(()) => return Ok(()),
+                            Err(BeforeCheckpointError::SoftError(e)) => {
+                                retry_count += 1;
+                                self.ctx.send_monitoring_event(ProcessingEvent::checkpoint(
+                                    shard_id.to_string(),
+                                    last_sequence.to_string(),
+                                    false,
+                                    Some(format!("Validation failed (attempt {}): {}", retry_count, e)),
+                                )).await;
+                                continue;
+                            }
+                            Err(BeforeCheckpointError::HardError(e)) => {
+                                return Err(ProcessorError::CheckpointError(e.to_string()));
+                            }
                         }
                     }
+                    _ = shutdown_rx.changed() => {
+                        return Err(ProcessorError::Shutdown);
+                    }
                 }
-                _ = shutdown_rx.changed() => {
-                    return Err(ProcessorError::Shutdown);
-                }
-            }
             }
         }
         Ok(())
@@ -1234,35 +1276,42 @@ where
         processed_items: &[P::Item],
         metadata: &CheckpointMetadata<'_>,
     ) -> std::result::Result<(), BeforeCheckpointError> {
-        match self.ctx.processor.before_checkpoint(processed_items.to_vec(), metadata.clone()).await {
-            Ok(()) => {
-                match self.ctx.store.save_checkpoint(shard_id, sequence).await {
-                    Ok(()) => {
-                        self.send_checkpoint_success(shard_id, sequence).await;
-                        Ok(())
-                    }
-                    Err(e) => Err(BeforeCheckpointError::SoftError(e.into()))
+        match self
+            .ctx
+            .processor
+            .before_checkpoint(processed_items.to_vec(), metadata.clone())
+            .await
+        {
+            Ok(()) => match self.ctx.store.save_checkpoint(shard_id, sequence).await {
+                Ok(()) => {
+                    self.send_checkpoint_success(shard_id, sequence).await;
+                    Ok(())
                 }
-            }
-            Err(e) => Err(e)
+                Err(e) => Err(BeforeCheckpointError::SoftError(e)),
+            },
+            Err(e) => Err(e),
         }
     }
 
     // Monitoring event helpers
     async fn send_success_event(&self, shard_id: &str, sequence: &str) {
-        self.ctx.send_monitoring_event(ProcessingEvent::record_success(
-            shard_id.to_string(),
-            sequence.to_string(),
-            true,
-        )).await;
+        self.ctx
+            .send_monitoring_event(ProcessingEvent::record_success(
+                shard_id.to_string(),
+                sequence.to_string(),
+                true,
+            ))
+            .await;
     }
 
     async fn send_failure_event(&self, shard_id: &str, sequence: &str, error: String) {
-        self.ctx.send_monitoring_event(ProcessingEvent::record_failure(
-            shard_id.to_string(),
-            sequence.to_string(),
-            error,
-        )).await;
+        self.ctx
+            .send_monitoring_event(ProcessingEvent::record_failure(
+                shard_id.to_string(),
+                sequence.to_string(),
+                error,
+            ))
+            .await;
     }
 
     async fn send_attempt_event(
@@ -1273,24 +1322,28 @@ where
         success: bool,
         error: Option<String>,
     ) {
-        self.ctx.send_monitoring_event(ProcessingEvent::record_attempt(
-            shard_id.to_string(),
-            sequence.to_string(),
-            success,
-            attempt,
-            Duration::from_secs(0),
-            error,
-            false,
-        )).await;
+        self.ctx
+            .send_monitoring_event(ProcessingEvent::record_attempt(
+                shard_id.to_string(),
+                sequence.to_string(),
+                success,
+                attempt,
+                Duration::from_secs(0),
+                error,
+                false,
+            ))
+            .await;
     }
 
     async fn send_checkpoint_success(&self, shard_id: &str, sequence: &str) {
-        self.ctx.send_monitoring_event(ProcessingEvent::checkpoint(
-            shard_id.to_string(),
-            sequence.to_string(),
-            true,
-            None,
-        )).await;
+        self.ctx
+            .send_monitoring_event(ProcessingEvent::checkpoint(
+                shard_id.to_string(),
+                sequence.to_string(),
+                true,
+                None,
+            ))
+            .await;
     }
 
     async fn send_batch_metrics(
@@ -1299,12 +1352,14 @@ where
         result: &BatchProcessingResult,
         duration: Duration,
     ) {
-        self.ctx.send_monitoring_event(ProcessingEvent::batch_complete(
-            shard_id.to_string(),
-            result.successful_records.len(),
-            result.failed_records.len(),
-            duration,
-        )).await;
+        self.ctx
+            .send_monitoring_event(ProcessingEvent::batch_complete(
+                shard_id.to_string(),
+                result.successful_records.len(),
+                result.failed_records.len(),
+                duration,
+            ))
+            .await;
     }
 }
 
@@ -2103,6 +2158,3 @@ mod tests {
         Ok(())
     }
 }
-
-
-
