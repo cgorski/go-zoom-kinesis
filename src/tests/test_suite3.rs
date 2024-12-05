@@ -8,9 +8,35 @@ mod tests {
     use crate::KinesisProcessor;
     use crate::ProcessorConfig;
     use std::collections::VecDeque;
+    use std::sync::Once;
     use std::time::Duration;
 
     use anyhow::Result;
+
+
+    // 1. Create a static variable that can only be executed once
+    static INIT: Once = Once::new();
+
+    fn init_logging() {
+        // 2. call_once ensures this initialization code runs exactly one time
+        INIT.call_once(|| {
+            tracing_subscriber::fmt()
+                // 3. Configure the logging levels and filters
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("go_zoom_kinesis=debug".parse().unwrap())
+                        .add_directive("test=debug".parse().unwrap()),
+                )
+                // 4. Configure output format and metadata
+                .with_test_writer()
+                .with_thread_ids(true)
+                .with_file(true)
+                .with_line_number(true)
+                // 5. Initialize, ignoring if already done
+                .try_init()
+                .ok();
+        });
+    }
 
     // Helper functions for all tests
     async fn setup_test_environment() -> (
@@ -392,6 +418,87 @@ mod tests {
             premature_successes, 0,
             "Should not complete batch while validation is failing"
         );
+
+        // Clean shutdown
+        tx.send(true)?;
+        handle.await??;
+
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn test_checkpoint_retry_sequence() -> Result<()> {
+        init_logging();
+        let (client, processor, store, config) = setup_test_environment().await;
+
+        // Configure a specific sequence of validation responses
+        let validation_sequence = vec![
+            // First few attempts fail with soft errors
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 1"))),
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 2"))),
+            Err(BeforeCheckpointError::soft(anyhow::anyhow!("Not ready yet 3"))),
+            // Then succeed
+            Ok(()),
+        ];
+
+        processor.before_checkpoint_results.write().await.extend(validation_sequence);
+
+        // Setup single record processing
+        let test_record = TestUtils::create_test_record("test-seq-1", b"test data");
+
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client.mock_get_records(Ok((vec![test_record], None))).await;
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (processor_instance, mut monitoring_rx) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
+
+        let handle = tokio::spawn(async move {
+            processor_instance.run(rx).await
+        });
+
+        // Collect and verify events
+        let events = collect_monitoring_events(&mut monitoring_rx, Duration::from_millis(500)).await;
+
+        println!("\nReceived Events:");
+        for event in &events {
+            println!("Event: {:?}", event);
+        }
+
+        // Verify the sequence of events
+        let mut saw_record_success = false;
+        let mut validation_failures = Vec::new();
+        let mut saw_final_success = false;
+
+        for event in &events {
+            match &event.event_type {
+                ProcessingEventType::RecordSuccess { sequence_number, .. } if sequence_number == "test-seq-1" => {
+                    saw_record_success = true;
+                    assert!(!saw_final_success, "Record success should come before checkpoint success");
+                }
+                ProcessingEventType::Checkpoint { success: false, error: Some(err), .. } => {
+                    assert!(saw_record_success, "Validation failures should come after record success");
+                    validation_failures.push(err.clone());
+                }
+                ProcessingEventType::Checkpoint { success: true, .. } => {
+                    saw_final_success = true;
+                    assert!(!validation_failures.is_empty(), "Should see validation failures before success");
+                }
+                _ => {}
+            }
+        }
+
+        // Verify we saw the expected sequence
+        assert!(saw_record_success, "Should have seen record success");
+        assert_eq!(validation_failures.len(), 3, "Should have seen exactly 3 validation failures");
+        assert!(saw_final_success, "Should have seen final checkpoint success");
+
+        // Verify the validation failure messages
+        assert!(validation_failures[0].contains("Not ready yet 1"));
+        assert!(validation_failures[1].contains("Not ready yet 2"));
+        assert!(validation_failures[2].contains("Not ready yet 3"));
 
         // Clean shutdown
         tx.send(true)?;
