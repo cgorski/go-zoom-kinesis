@@ -8,6 +8,8 @@
 //! - Checkpointing of progress
 //! - Monitoring and metrics
 //! - Graceful shutdown
+
+use std::collections::VecDeque;
 use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use tokio::time::Instant;
@@ -508,12 +510,123 @@ where
     context: ProcessingContext<P, C, S>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IteratorRefreshMetrics {
+    refresh_count: u32,
+    last_refresh_time: Option<Instant>,
+    last_successful_sequence: Option<String>,
+    consecutive_failures: u32,
+    last_error: Option<String>,
+}
+
+
+
 impl<P, C, S> KinesisProcessor<P, C, S>
 where
     P: RecordProcessor + Send + Sync + 'static,
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
+    async fn refresh_iterator(
+        &self,
+        shard_id: &str,
+        state: &mut ShardProcessingState,
+        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>
+    ) -> Result<String> {
+        info!(
+            shard_id = %shard_id,
+            refresh_count = state.refresh_metrics.refresh_count,
+            consecutive_failures = state.refresh_metrics.consecutive_failures,
+            "Beginning iterator refresh"
+        );
+
+        if *shutdown_rx.borrow() {
+            return Err(ProcessorError::Shutdown);
+        }
+
+        let sequence = self.get_refresh_sequence(shard_id, state).await?;
+
+        let iterator_result = match &sequence {
+            Some(seq) => {
+                info!(shard_id = %shard_id, sequence = %seq, "Refreshing iterator from sequence");
+                self.get_sequence_iterator(shard_id, seq).await
+            }
+            None => {
+                warn!(shard_id = %shard_id, "No sequence available, using TrimHorizon");
+                self.get_trim_horizon_iterator(shard_id).await
+            }
+        };
+
+        match iterator_result {
+            Ok(new_iterator) => {
+                state.record_refresh_attempt(new_iterator.clone(), true, None);
+                info!(
+                    shard_id = %shard_id,
+                    refresh_count = state.refresh_metrics.refresh_count,
+                    "Successfully refreshed iterator"
+                );
+                Ok(new_iterator)
+            }
+            Err(e) => {
+                state.record_refresh_attempt(String::new(), false, Some(e.to_string()));
+                error!(
+                    shard_id = %shard_id,
+                    error = %e,
+                    refresh_count = state.refresh_metrics.refresh_count,
+                    consecutive_failures = state.refresh_metrics.consecutive_failures,
+                    "Failed to refresh iterator"
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn get_refresh_sequence(
+        &self,
+        shard_id: &str,
+        state: &ShardProcessingState
+    ) -> Result<Option<String>> {
+        if let Ok(Some(checkpoint)) = self.context.store.get_checkpoint(shard_id).await {
+            debug!(shard_id = %shard_id, checkpoint = %checkpoint, "Found checkpoint for refresh");
+            return Ok(Some(checkpoint));
+        }
+
+        if let Some(seq) = &state.last_successful_sequence {
+            debug!(shard_id = %shard_id, sequence = %seq, "Using last successful sequence");
+            return Ok(Some(seq.clone()));
+        }
+
+        debug!(shard_id = %shard_id, "No sequence available for refresh");
+        Ok(None)
+    }
+
+    async fn get_sequence_iterator(&self, shard_id: &str, sequence: &str) -> Result<String> {
+        self.context.client
+            .get_shard_iterator(
+                &self.context.config.stream_name,
+                shard_id,
+                ShardIteratorType::AfterSequenceNumber,
+                Some(sequence),
+                None,
+            )
+            .await
+            .map_err(ProcessorError::from)
+    }
+
+    async fn get_trim_horizon_iterator(&self, shard_id: &str) -> Result<String> {
+        self.context.client
+            .get_shard_iterator(
+                &self.context.config.stream_name,
+                shard_id,
+                ShardIteratorType::TrimHorizon,
+                None,
+                None,
+            )
+            .await
+            .map_err(ProcessorError::from)
+    }
+
+
     /// Creates a new processor instance
     ///
     /// # Arguments
@@ -1050,13 +1163,52 @@ where
 struct ShardProcessingState {
     /// Last successfully processed sequence number
     last_successful_sequence: Option<String>,
+    refresh_metrics: IteratorRefreshMetrics,
+    iterator_history: VecDeque<(String, Instant)>,
+    max_history_size: usize,
+
 }
 
 impl ShardProcessingState {
     fn new() -> Self {
         Self {
             last_successful_sequence: None,
+            // NEW initialization
+            refresh_metrics: IteratorRefreshMetrics {
+                refresh_count: 0,
+                last_refresh_time: None,
+                last_successful_sequence: None,
+                consecutive_failures: 0,
+                last_error: None,
+            },
+            iterator_history: VecDeque::with_capacity(10),
+            max_history_size: 10,
         }
+    }
+
+
+    fn record_refresh_attempt(&mut self, iterator: String, success: bool, error: Option<String>) {
+        let now = Instant::now();
+
+        if success {
+            self.refresh_metrics.consecutive_failures = 0;
+            self.iterator_history.push_back((iterator, now));
+            if self.iterator_history.len() > self.max_history_size {
+                self.iterator_history.pop_front();
+            }
+        } else {
+            self.refresh_metrics.consecutive_failures += 1;
+            self.refresh_metrics.last_error = error;
+        }
+
+        self.refresh_metrics.refresh_count += 1;
+        self.refresh_metrics.last_refresh_time = Some(now);
+    }
+
+
+    fn update_sequence(&mut self, sequence: String) {
+        self.last_successful_sequence = Some(sequence.clone());
+        self.refresh_metrics.last_successful_sequence = Some(sequence);
     }
 }
 
