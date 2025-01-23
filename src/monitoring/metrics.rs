@@ -113,11 +113,13 @@ impl MetricsAggregator {
 
     pub async fn process_event(&self, event: ProcessingEvent) {
         let mut metrics = self.metrics.write().await;
-        let shard_metrics = metrics.entry(event.shard_id.clone()).or_insert_with(|| ShardMetrics {
-            window_start: Instant::now(),
-            last_updated: Instant::now(),
-            ..Default::default()
-        });
+        let shard_metrics = metrics
+            .entry(event.shard_id.clone())
+            .or_insert_with(|| ShardMetrics {
+                window_start: Instant::now(),
+                last_updated: Instant::now(),
+                ..Default::default()
+            });
 
         match event.event_type {
             ProcessingEventType::RecordAttempt {

@@ -121,19 +121,32 @@ mod tests {
         let store = MockCheckpointStore::new();
 
         // Set initial checkpoint
-        store.save_checkpoint("shard-1", "test-sequence-100")
+        store
+            .save_checkpoint("shard-1", "test-sequence-100")
             .await
             .context("Failed to save initial checkpoint")?;
 
         // Setup mock responses
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator-1".to_string())).await;
-        client.mock_get_records(Err(KinesisClientError::ExpiredIterator)).await;
-        client.mock_get_iterator(Ok("test-iterator-2".to_string())).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator-1".to_string()))
+            .await;
+        client
+            .mock_get_records(Err(KinesisClientError::ExpiredIterator))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator-2".to_string()))
+            .await;
 
         let test_record = TestUtils::create_test_record("test-sequence-101", b"test data");
-        client.mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string())))).await;
-        client.mock_get_records(Ok((vec![], Some("final-iterator".to_string())))).await;
+        client
+            .mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string()))))
+            .await;
+        client
+            .mock_get_records(Ok((vec![], Some("final-iterator".to_string()))))
+            .await;
 
         // Initialize processor
         let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -144,100 +157,99 @@ mod tests {
             store.clone(),
         );
 
-        let mut harness = TestMonitoringHarness::new(
-            monitoring_rx.expect("Monitoring should be enabled")
-        );
+        let mut harness =
+            TestMonitoringHarness::new(monitoring_rx.expect("Monitoring should be enabled"));
 
         let processor_clone = mock_processor.clone();
         let store_clone = store.clone();
         let start_time = Instant::now();
 
         tokio::select! {
-        processor_result = processor.run(rx) => {
-            match processor_result {
-                Ok(_) => {
-                    debug!("Processor completed successfully");
-                }
-                Err(e) => {
-                    if !matches!(e, ProcessorError::Shutdown) {
-                        return Err(anyhow::anyhow!("Unexpected processor error: {}", e));
+            processor_result = processor.run(rx) => {
+                match processor_result {
+                    Ok(_) => {
+                        debug!("Processor completed successfully");
+                    }
+                    Err(e) => {
+                        if !matches!(e, ProcessorError::Shutdown) {
+                            return Err(anyhow::anyhow!("Unexpected processor error: {}", e));
+                        }
                     }
                 }
             }
-        }
-        harness_result = harness.wait_for_events(&[
-            "shard_start",
-            "iterator_acquired",
-            "iterator_expired",
-            "iterator_renewed",
-            "record_success_test-sequence-101",
-            "checkpoint_success_test-sequence-101",
-            "shard_completed"
-        ]) => {
-            harness_result.context("Failed while waiting for events")?;
+            harness_result = harness.wait_for_events(&[
+                "shard_start",
+                "iterator_acquired",
+                "iterator_expired",
+                "iterator_renewed",
+                "record_success_test-sequence-101",
+                "checkpoint_success_test-sequence-101",
+                "shard_completed"
+            ]) => {
+                harness_result.context("Failed while waiting for events")?;
 
-            let elapsed = start_time.elapsed();
-            ensure!(elapsed < Duration::from_secs(5),
-                   "Processing took too long: {:?}", elapsed);
+                let elapsed = start_time.elapsed();
+                ensure!(elapsed < Duration::from_secs(5),
+                       "Processing took too long: {:?}", elapsed);
 
-            // Verify processing completed correctly
-            let process_count = processor_clone.get_process_count().await;
-            ensure!(process_count == 1,
-                   "Expected exactly one record to be processed, got {}", process_count);
+                // Verify processing completed correctly
+                let process_count = processor_clone.get_process_count().await;
+                ensure!(process_count == 1,
+                       "Expected exactly one record to be processed, got {}", process_count);
 
-            // Verify the correct record was processed
-            let processed_records = processor_clone.get_processed_records().await;
-            ensure!(processed_records.len() == 1,
-                   "Expected one processed record, got {}", processed_records.len());
-            ensure!(processed_records[0].sequence_number() == "test-sequence-101",
-                   "Wrong record processed: expected test-sequence-101, got {}",
-                   processed_records[0].sequence_number());
+                // Verify the correct record was processed
+                let processed_records = processor_clone.get_processed_records().await;
+                ensure!(processed_records.len() == 1,
+                       "Expected one processed record, got {}", processed_records.len());
+                ensure!(processed_records[0].sequence_number() == "test-sequence-101",
+                       "Wrong record processed: expected test-sequence-101, got {}",
+                       processed_records[0].sequence_number());
 
-            // Verify checkpoint was saved
-            let checkpoint = store_clone.get_checkpoint("shard-1")
-                .await
-                .context("Failed to get final checkpoint")?;
-            ensure!(checkpoint == Some("test-sequence-101".to_string()),
-                   "Wrong checkpoint saved: expected test-sequence-101, got {:?}",
-                   checkpoint);
+                // Verify checkpoint was saved
+                let checkpoint = store_clone.get_checkpoint("shard-1")
+                    .await
+                    .context("Failed to get final checkpoint")?;
+                ensure!(checkpoint == Some("test-sequence-101".to_string()),
+                       "Wrong checkpoint saved: expected test-sequence-101, got {:?}",
+                       checkpoint);
 
-            // Verify event sequence
-            let history = harness.get_event_history().await;
-            debug!("Event history:");
-            for (i, event) in history.iter().enumerate() {
-                debug!("  {}: {:?}", i, event);
+                // Verify event sequence
+                let history = harness.get_event_history().await;
+                debug!("Event history:");
+                for (i, event) in history.iter().enumerate() {
+                    debug!("  {}: {:?}", i, event);
+                }
+
+                let mut found_initial = false;
+                let mut found_expired = false;
+                let mut found_renewed = false;
+
+                for event in &history {
+                    if let ProcessingEventType::Iterator { event_type, .. } = &event.event_type { match event_type {
+                        IteratorEventType::Initial if !found_expired => {
+                            found_initial = true;
+                        }
+                        IteratorEventType::Expired if found_initial => {
+                            found_expired = true;
+                        }
+                        IteratorEventType::Renewed if found_expired => {
+                            found_renewed = true;
+                        }
+                        _ => {}
+                    } }
+                }
+
+                ensure!(found_initial, "Missing initial iterator acquisition");
+                ensure!(found_expired, "Missing iterator expiration");
+                ensure!(found_renewed, "Missing iterator renewal");
+                ensure!(found_initial && found_expired && found_renewed,
+                       "Iterator events in wrong order");
             }
-
-            let mut found_initial = false;
-            let mut found_expired = false;
-            let mut found_renewed = false;
-
-            for event in &history {
-                if let ProcessingEventType::Iterator { event_type, .. } = &event.event_type { match event_type {
-                    IteratorEventType::Initial if !found_expired => {
-                        found_initial = true;
-                    }
-                    IteratorEventType::Expired if found_initial => {
-                        found_expired = true;
-                    }
-                    IteratorEventType::Renewed if found_expired => {
-                        found_renewed = true;
-                    }
-                    _ => {}
-                } }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                harness.dump_history().await;
+                return Err(anyhow::anyhow!("Test timed out waiting for processing to complete"));
             }
-
-            ensure!(found_initial, "Missing initial iterator acquisition");
-            ensure!(found_expired, "Missing iterator expiration");
-            ensure!(found_renewed, "Missing iterator renewal");
-            ensure!(found_initial && found_expired && found_renewed,
-                   "Iterator events in wrong order");
         }
-        _ = tokio::time::sleep(Duration::from_secs(5)) => {
-            harness.dump_history().await;
-            return Err(anyhow::anyhow!("Test timed out waiting for processing to complete"));
-        }
-    }
 
         info!("Shard iterator expiry test completed successfully");
         Ok(())

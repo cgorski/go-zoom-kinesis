@@ -1,22 +1,27 @@
-use tracing::debug;
-use crate::monitoring::IteratorEventType;
-use crate::monitoring::ShardEventType;
-use crate::monitoring::ProcessingEventType;
-use crate::monitoring::MonitoringConfig;
-use crate::ProcessorError;
 use crate::client::KinesisClientError;
-use crate::processor::{InitialPosition, ProcessorConfig, KinesisProcessor};
+use crate::error::Result;
+use crate::monitoring::IteratorEventType;
+use crate::monitoring::MonitoringConfig;
+use crate::monitoring::ProcessingEventType;
+use crate::monitoring::ShardEventType;
+use crate::processor::{InitialPosition, KinesisProcessor, ProcessorConfig};
+use crate::store::CheckpointStore;
 use crate::test::mocks::{MockKinesisClient, MockRecordProcessor};
 use crate::test::TestUtils;
 use crate::InMemoryCheckpointStore;
-use crate::error::Result;
+use crate::ProcessorError;
 use chrono::{TimeZone, Utc};
 use std::time::Duration;
-use crate::store::CheckpointStore;
+use tracing::debug;
 
 async fn setup_basic_test_context(
     initial_position: InitialPosition,
-) -> (MockKinesisClient, MockRecordProcessor, InMemoryCheckpointStore, ProcessorConfig) {
+) -> (
+    MockKinesisClient,
+    MockRecordProcessor,
+    InMemoryCheckpointStore,
+    ProcessorConfig,
+) {
     let config = ProcessorConfig {
         stream_name: "test-stream".to_string(),
         batch_size: 100,
@@ -35,21 +40,27 @@ async fn setup_basic_test_context(
 
 #[tokio::test]
 async fn test_trim_horizon_position() -> Result<()> {
-    let (client, processor, store, config) = setup_basic_test_context(InitialPosition::TrimHorizon).await;
+    let (client, processor, store, config) =
+        setup_basic_test_context(InitialPosition::TrimHorizon).await;
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-    client.mock_get_records(Ok((
-        vec![TestUtils::create_test_record("seq-1", b"test data")],
-        None,
-    ))).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
+    client
+        .mock_get_records(Ok((
+            vec![TestUtils::create_test_record("seq-1", b"test data")],
+            None,
+        )))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
+    let (processor_instance, _) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     // Give it some time to process
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -71,29 +82,36 @@ async fn test_trim_horizon_position() -> Result<()> {
 #[tokio::test]
 async fn test_at_sequence_number_position() -> Result<()> {
     let initial_sequence = "sequence-100".to_string();
-    let (client, processor, store, config) = setup_basic_test_context(
-        InitialPosition::AtSequenceNumber(initial_sequence.clone())
-    ).await;
+    let (client, processor, store, config) =
+        setup_basic_test_context(InitialPosition::AtSequenceNumber(initial_sequence.clone())).await;
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-    client.mock_get_records(Ok((
-        vec![TestUtils::create_test_record("seq-101", b"test data")],
-        None,
-    ))).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
+    client
+        .mock_get_records(Ok((
+            vec![TestUtils::create_test_record("seq-101", b"test data")],
+            None,
+        )))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
+    let (processor_instance, _) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify we got the expected sequence
     let processed_records = processor.get_processed_records().await;
-    assert!(!processed_records.is_empty(), "Should have processed at least one record");
+    assert!(
+        !processed_records.is_empty(),
+        "Should have processed at least one record"
+    );
     assert_eq!(
         processed_records[0].sequence_number(),
         "seq-101",
@@ -113,7 +131,10 @@ async fn test_config_validation() {
         initial_position: InitialPosition::AtSequenceNumber("".to_string()),
         ..Default::default()
     };
-    assert!(config.validate().is_err(), "Should reject empty sequence number");
+    assert!(
+        config.validate().is_err(),
+        "Should reject empty sequence number"
+    );
 
     // Test invalid timestamp
     let invalid_time = Utc.timestamp_opt(-1, 0).unwrap();
@@ -121,7 +142,10 @@ async fn test_config_validation() {
         initial_position: InitialPosition::AtTimestamp(invalid_time),
         ..Default::default()
     };
-    assert!(config.validate().is_err(), "Should reject invalid timestamp");
+    assert!(
+        config.validate().is_err(),
+        "Should reject invalid timestamp"
+    );
 
     // Test valid cases
     let valid_cases = vec![
@@ -142,25 +166,31 @@ async fn test_config_validation() {
 
 #[tokio::test]
 async fn test_latest_position() -> Result<()> {
-    let (client, processor, store, config) = setup_basic_test_context(InitialPosition::Latest).await;
+    let (client, processor, store, config) =
+        setup_basic_test_context(InitialPosition::Latest).await;
 
     // Setup mock responses
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator-latest".to_string())).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator-latest".to_string()))
+        .await;
 
     // Mock some "new" records that would appear after Latest position
     let test_records = vec![
         TestUtils::create_test_record("new-seq-1", b"new data 1"),
         TestUtils::create_test_record("new-seq-2", b"new data 2"),
     ];
-    client.mock_get_records(Ok((test_records.clone(), None))).await;
+    client
+        .mock_get_records(Ok((test_records.clone(), None)))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
+    let (processor_instance, _) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     // Wait for processing
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -191,26 +221,30 @@ async fn test_latest_position() -> Result<()> {
 #[tokio::test]
 async fn test_at_timestamp_position() -> Result<()> {
     let timestamp = Utc::now();
-    let (client, processor, store, config) = setup_basic_test_context(
-        InitialPosition::AtTimestamp(timestamp)
-    ).await;
+    let (client, processor, store, config) =
+        setup_basic_test_context(InitialPosition::AtTimestamp(timestamp)).await;
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator-timestamp".to_string())).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator-timestamp".to_string()))
+        .await;
 
     // Mock records that would appear after the timestamp
     let test_records = vec![
         TestUtils::create_test_record("timestamp-seq-1", b"timestamp data 1"),
         TestUtils::create_test_record("timestamp-seq-2", b"timestamp data 2"),
     ];
-    client.mock_get_records(Ok((test_records.clone(), None))).await;
+    client
+        .mock_get_records(Ok((test_records.clone(), None)))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
+    let (processor_instance, _) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -242,30 +276,36 @@ async fn test_checkpoint_preference_override() -> Result<()> {
 
     // Save a checkpoint
     let checkpoint_sequence = "checkpoint-seq-100";
-    store.save_checkpoint("shard-1", checkpoint_sequence).await?;
+    store
+        .save_checkpoint("shard-1", checkpoint_sequence)
+        .await?;
 
     // Setup mock responses
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator-checkpoint".to_string())).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator-checkpoint".to_string()))
+        .await;
 
     // Mock records that would appear after the checkpoint
     let test_records = vec![
         TestUtils::create_test_record("checkpoint-seq-101", b"after checkpoint 1"),
         TestUtils::create_test_record("checkpoint-seq-102", b"after checkpoint 2"),
     ];
-    client.mock_get_records(Ok((test_records.clone(), None))).await;
+    client
+        .mock_get_records(Ok((test_records.clone(), None)))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
     let (processor_instance, _) = KinesisProcessor::new(
         config_with_preference,
         processor.clone(),
         client.clone(),
-        store
+        store,
     );
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -298,28 +338,35 @@ async fn test_checkpoint_preference_override() -> Result<()> {
     let store2 = InMemoryCheckpointStore::new();
 
     // Save the same checkpoint
-    store2.save_checkpoint("shard-1", checkpoint_sequence).await?;
+    store2
+        .save_checkpoint("shard-1", checkpoint_sequence)
+        .await?;
 
-    client2.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client2.mock_get_iterator(Ok("test-iterator-latest".to_string())).await;
+    client2
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client2
+        .mock_get_iterator(Ok("test-iterator-latest".to_string()))
+        .await;
 
     // These records simulate what we'd get from Latest position
-    let latest_records = vec![
-        TestUtils::create_test_record("latest-seq-1", b"latest data")
-    ];
-    client2.mock_get_records(Ok((latest_records.clone(), None))).await;
+    let latest_records = vec![TestUtils::create_test_record(
+        "latest-seq-1",
+        b"latest data",
+    )];
+    client2
+        .mock_get_records(Ok((latest_records.clone(), None)))
+        .await;
 
     let (tx2, rx2) = tokio::sync::watch::channel(false);
     let (processor_instance2, _) = KinesisProcessor::new(
         config_without_preference,
         processor2.clone(),
         client2.clone(),
-        store2
+        store2,
     );
 
-    let handle2 = tokio::spawn(async move {
-        processor_instance2.run(rx2).await
-    });
+    let handle2 = tokio::spawn(async move { processor_instance2.run(rx2).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -363,14 +410,21 @@ async fn test_initial_position_error_handling() -> Result<()> {
         };
 
         let validation_result = config.validate();
-        assert!(validation_result.is_err(),
-                "Case '{}' should fail validation", case_name);
+        assert!(
+            validation_result.is_err(),
+            "Case '{}' should fail validation",
+            case_name
+        );
 
         let error = validation_result.unwrap_err();
         let error_str = error.to_string();
-        assert!(error_str.contains(expected_error),
-                "Case '{}' should fail with error containing '{}', got '{}'",
-                case_name, expected_error, error_str);
+        assert!(
+            error_str.contains(expected_error),
+            "Case '{}' should fail with error containing '{}', got '{}'",
+            case_name,
+            expected_error,
+            error_str
+        );
     }
 
     // Test iterator acquisition failures
@@ -384,16 +438,26 @@ async fn test_initial_position_error_handling() -> Result<()> {
     let processor = MockRecordProcessor::new();
     let store = InMemoryCheckpointStore::new();
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Err(KinesisClientError::AccessDenied)).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Err(KinesisClientError::AccessDenied))
+        .await;
 
     let (_tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
+    let (processor_instance, _) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
     let result = processor_instance.run(rx).await;
-    assert!(result.is_err(), "Should fail when iterator acquisition fails");
-    assert!(matches!(result, Err(ProcessorError::GetIteratorFailed(_))),
-            "Should return GetIteratorFailed error");
+    assert!(
+        result.is_err(),
+        "Should fail when iterator acquisition fails"
+    );
+    assert!(
+        matches!(result, Err(ProcessorError::GetIteratorFailed(_))),
+        "Should return GetIteratorFailed error"
+    );
 
     Ok(())
 }
@@ -402,22 +466,13 @@ async fn test_initial_position_error_handling() -> Result<()> {
 async fn test_initial_position_validation() -> Result<()> {
     // Test valid configurations
     let valid_cases = vec![
-        (
-            "trim_horizon",
-            InitialPosition::TrimHorizon,
-        ),
-        (
-            "latest",
-            InitialPosition::Latest,
-        ),
+        ("trim_horizon", InitialPosition::TrimHorizon),
+        ("latest", InitialPosition::Latest),
         (
             "valid_sequence",
             InitialPosition::AtSequenceNumber("valid-sequence".to_string()),
         ),
-        (
-            "valid_timestamp",
-            InitialPosition::AtTimestamp(Utc::now()),
-        ),
+        ("valid_timestamp", InitialPosition::AtTimestamp(Utc::now())),
     ];
 
     for (case_name, position) in valid_cases {
@@ -427,8 +482,11 @@ async fn test_initial_position_validation() -> Result<()> {
             ..Default::default()
         };
 
-        assert!(config.validate().is_ok(),
-                "Valid case '{}' should pass validation", case_name);
+        assert!(
+            config.validate().is_ok(),
+            "Valid case '{}' should pass validation",
+            case_name
+        );
     }
 
     Ok(())
@@ -437,11 +495,7 @@ async fn test_initial_position_validation() -> Result<()> {
 #[tokio::test]
 async fn test_initial_position_behavior() -> Result<()> {
     let test_cases = vec![
-        (
-            "trim_horizon",
-            InitialPosition::TrimHorizon,
-            "test-seq-1",
-        ),
+        ("trim_horizon", InitialPosition::TrimHorizon, "test-seq-1"),
         (
             "at_sequence",
             InitialPosition::AtSequenceNumber("test-seq-100".to_string()),
@@ -460,34 +514,41 @@ async fn test_initial_position_behavior() -> Result<()> {
         let processor = MockRecordProcessor::new();
         let store = InMemoryCheckpointStore::new();
 
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-        client.mock_get_records(Ok((
-            vec![TestUtils::create_test_record(expected_first_sequence, b"test data")],
-            None,
-        ))).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        client
+            .mock_get_records(Ok((
+                vec![TestUtils::create_test_record(
+                    expected_first_sequence,
+                    b"test data",
+                )],
+                None,
+            )))
+            .await;
 
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client.clone(),
-            store,
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-        let handle = tokio::spawn(async move {
-            processor_instance.run(rx).await
-        });
+        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let processed_records = processor.get_processed_records().await;
-        assert!(!processed_records.is_empty(),
-                "Case '{}' should process records", case_name);
+        assert!(
+            !processed_records.is_empty(),
+            "Case '{}' should process records",
+            case_name
+        );
         assert_eq!(
             processed_records[0].sequence_number(),
             expected_first_sequence,
-            "Case '{}' should process expected sequence", case_name
+            "Case '{}' should process expected sequence",
+            case_name
         );
 
         tx.send(true)?;
@@ -513,39 +574,41 @@ async fn test_initial_position_with_monitoring() -> Result<()> {
     let processor = MockRecordProcessor::new();
     let store = InMemoryCheckpointStore::new();
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-    client.mock_get_records(Ok((
-        vec![TestUtils::create_test_record("test-seq-101", b"test data")],
-        None,
-    ))).await;
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
+    client
+        .mock_get_records(Ok((
+            vec![TestUtils::create_test_record("test-seq-101", b"test data")],
+            None,
+        )))
+        .await;
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (processor_instance, mut monitoring_rx) = KinesisProcessor::new(
-        config,
-        processor.clone(),
-        client.clone(),
-        store
-    );
+    let (processor_instance, mut monitoring_rx) =
+        KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     // Collect and verify monitoring events
     let mut events = Vec::new();
     while let Ok(Some(event)) = tokio::time::timeout(
         Duration::from_millis(100),
-        monitoring_rx.as_mut().unwrap().recv()
-    ).await {
+        monitoring_rx.as_mut().unwrap().recv(),
+    )
+    .await
+    {
         debug!("Received monitoring event: {:?}", event);
         events.push(event);
 
         // Break if we've seen a batch completion
-        if events.iter().any(|e| matches!(
-            e.event_type,
-            ProcessingEventType::BatchComplete { .. }
-        )) {
+        if events
+            .iter()
+            .any(|e| matches!(e.event_type, ProcessingEventType::BatchComplete { .. }))
+        {
             break;
         }
     }
@@ -560,10 +623,16 @@ async fn test_initial_position_with_monitoring() -> Result<()> {
     let mut event_sequence = Vec::new();
     for event in &events {
         match &event.event_type {
-            ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+            ProcessingEventType::ShardEvent {
+                event_type: ShardEventType::Started,
+                ..
+            } => {
                 event_sequence.push("shard_start".to_string());
             }
-            ProcessingEventType::Iterator { event_type: IteratorEventType::Initial, .. } => {
+            ProcessingEventType::Iterator {
+                event_type: IteratorEventType::Initial,
+                ..
+            } => {
                 event_sequence.push("iterator_acquired".to_string());
             }
             ProcessingEventType::RecordSuccess { .. } => {
@@ -587,12 +656,11 @@ async fn test_initial_position_with_monitoring() -> Result<()> {
         "iterator_acquired",
         "record_success",
         "checkpoint",
-        "batch_complete"
+        "batch_complete",
     ];
 
     assert_eq!(
-        event_sequence,
-        expected_sequence,
+        event_sequence, expected_sequence,
         "Event sequence does not match expected sequence"
     );
 
@@ -614,26 +682,31 @@ async fn test_initial_position_edge_cases() -> Result<()> {
     let processor = MockRecordProcessor::new();
     let store = InMemoryCheckpointStore::new();
 
-    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-    client.mock_get_records(Ok((vec![], None))).await;  // Empty records
+    client
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
+    client.mock_get_records(Ok((vec![], None))).await; // Empty records
 
     let (tx, rx) = tokio::sync::watch::channel(false);
     let (processor_instance, _) = KinesisProcessor::new(
         config.clone(),
         processor.clone(),
         client.clone(),
-        store.clone()
+        store.clone(),
     );
 
-    let handle = tokio::spawn(async move {
-        processor_instance.run(rx).await
-    });
+    let handle = tokio::spawn(async move { processor_instance.run(rx).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let processed_records = processor.get_processed_records().await;
-    assert!(processed_records.is_empty(), "Should not process any records from empty shard");
+    assert!(
+        processed_records.is_empty(),
+        "Should not process any records from empty shard"
+    );
 
     tx.send(true)?;
     handle.await??;
@@ -649,29 +722,32 @@ async fn test_initial_position_edge_cases() -> Result<()> {
     let processor2 = MockRecordProcessor::new();
     let store2 = InMemoryCheckpointStore::new();
 
-    client2.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-    client2.mock_get_iterator(Ok("test-iterator".to_string())).await;
-    client2.mock_get_records(Ok((
-        vec![TestUtils::create_test_record("next-seq", b"test data")],
-        None,
-    ))).await;
+    client2
+        .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+        .await;
+    client2
+        .mock_get_iterator(Ok("test-iterator".to_string()))
+        .await;
+    client2
+        .mock_get_records(Ok((
+            vec![TestUtils::create_test_record("next-seq", b"test data")],
+            None,
+        )))
+        .await;
 
     let (tx2, rx2) = tokio::sync::watch::channel(false);
-    let (processor_instance2, _) = KinesisProcessor::new(
-        config_boundary,
-        processor2.clone(),
-        client2.clone(),
-        store2
-    );
+    let (processor_instance2, _) =
+        KinesisProcessor::new(config_boundary, processor2.clone(), client2.clone(), store2);
 
-    let handle2 = tokio::spawn(async move {
-        processor_instance2.run(rx2).await
-    });
+    let handle2 = tokio::spawn(async move { processor_instance2.run(rx2).await });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let processed_records2 = processor2.get_processed_records().await;
-    assert!(!processed_records2.is_empty(), "Should process records after boundary sequence");
+    assert!(
+        !processed_records2.is_empty(),
+        "Should process records after boundary sequence"
+    );
     assert_eq!(
         processed_records2[0].sequence_number(),
         "next-seq",

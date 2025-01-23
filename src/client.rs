@@ -118,7 +118,8 @@ impl KinesisClientTrait for Client {
             ShardIteratorType::AtSequenceNumber | ShardIteratorType::AfterSequenceNumber => {
                 if sequence_number.is_none() {
                     return Err(KinesisClientError::InvalidArgument(
-                        "Sequence number required for AtSequenceNumber/AfterSequenceNumber".to_string(),
+                        "Sequence number required for AtSequenceNumber/AfterSequenceNumber"
+                            .to_string(),
                     ));
                 }
             }
@@ -153,9 +154,9 @@ impl KinesisClientTrait for Client {
 
         // Send the request
         match req.send().await {
-            Ok(response) => Ok(response
-                .shard_iterator
-                .ok_or_else(|| KinesisClientError::Other("No shard iterator returned".to_string()))?),
+            Ok(response) => Ok(response.shard_iterator.ok_or_else(|| {
+                KinesisClientError::Other("No shard iterator returned".to_string())
+            })?),
             Err(err) => {
                 warn!("Failed to get shard iterator: {:?}", err);
                 Err(KinesisClientError::Other(err.to_string()))
