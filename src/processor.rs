@@ -571,6 +571,11 @@ where
         client: C,
         store: S,
     ) -> (Self, Option<mpsc::Receiver<ProcessingEvent>>) {
+        // Validate configuration
+        if let Err(e) = config.validate() {
+            panic!("Invalid processor configuration: {}", e);
+        }
+
         let (monitoring_tx, monitoring_rx) = if config.monitoring.enabled {
             let (tx, rx) = mpsc::channel(config.monitoring.channel_size);
             (Some(tx), Some(rx))
@@ -579,7 +584,6 @@ where
         };
 
         let context = ProcessingContext::new(processor, client, store, config, monitoring_tx);
-
         (Self { context }, monitoring_rx)
     }
 
@@ -755,43 +759,48 @@ where
         checkpoint: &Option<String>,
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<String> {
-        let iterator_type = if checkpoint.is_some() {
-            ShardIteratorType::AfterSequenceNumber
+        let (iterator_type, sequence_number, timestamp) = if ctx.config.prefer_stored_checkpoint && checkpoint.is_some() {
+            debug!(
+                shard_id = %shard_id,
+                checkpoint = ?checkpoint,
+                "Using stored checkpoint for iterator position"
+            );
+            (ShardIteratorType::AfterSequenceNumber, checkpoint.as_deref(), None)
         } else {
-            ShardIteratorType::TrimHorizon
+            debug!(
+                shard_id = %shard_id,
+                initial_position = ?ctx.config.initial_position,
+                "Using configured initial position"
+            );
+            match &ctx.config.initial_position {
+                InitialPosition::TrimHorizon => (ShardIteratorType::TrimHorizon, None, None),
+                InitialPosition::Latest => (ShardIteratorType::Latest, None, None),
+                InitialPosition::AtSequenceNumber(seq) => (ShardIteratorType::AtSequenceNumber, Some(seq.as_str()), None),
+                InitialPosition::AtTimestamp(ts) => (ShardIteratorType::AtTimestamp, None, Some(ts)),
+            }
         };
 
         tokio::select! {
             iterator_result = ctx.client.get_shard_iterator(
-                 &ctx.config.stream_name,
+                &ctx.config.stream_name,
                 shard_id,
                 iterator_type,
-                checkpoint.as_deref(),
-                None,
+                sequence_number,
+                timestamp,
             ) => {
                 match iterator_result {
                     Ok(iterator) => {
-                        debug!(
-                            shard_id = %shard_id,
-                            "Successfully acquired initial iterator"
-                        );
+                        debug!(shard_id = %shard_id, "Successfully acquired initial iterator");
                         Ok(iterator)
                     }
                     Err(e) => {
-                        error!(
-                            shard_id = %shard_id,
-                            error = %e,
-                            "Failed to get initial iterator"
-                        );
+                        error!(shard_id = %shard_id, error = %e, "Failed to get initial iterator");
                         Err(ProcessorError::GetIteratorFailed(e.to_string()))
                     }
                 }
             }
             _ = shutdown_rx.changed() => {
-                info!(
-                    shard_id = %shard_id,
-                    "Shutdown received while getting initial iterator"
-                );
+                info!(shard_id = %shard_id, "Shutdown received while getting initial iterator");
                 Err(ProcessorError::Shutdown)
             }
         }
@@ -1626,6 +1635,24 @@ where
                 duration,
             ))
             .await;
+    }
+}
+
+impl ProcessorConfig {
+    pub fn validate(&self) -> Result<()> {
+        match &self.initial_position {
+            InitialPosition::AtSequenceNumber(seq) if seq.is_empty() => {
+                Err(ProcessorError::ConfigError(
+                    "AtSequenceNumber position requires a non-empty sequence number".to_string(),
+                ))
+            }
+            InitialPosition::AtTimestamp(ts) if *ts < chrono::DateTime::<Utc>::UNIX_EPOCH => {
+                Err(ProcessorError::ConfigError(
+                    "AtTimestamp position requires a valid timestamp".to_string(),
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
