@@ -213,21 +213,18 @@ mod tests {
             let mut found_renewed = false;
 
             for event in &history {
-                match &event.event_type {
-                    ProcessingEventType::Iterator { event_type, .. } => match event_type {
-                        IteratorEventType::Initial if !found_expired => {
-                            found_initial = true;
-                        }
-                        IteratorEventType::Expired if found_initial => {
-                            found_expired = true;
-                        }
-                        IteratorEventType::Renewed if found_expired => {
-                            found_renewed = true;
-                        }
-                        _ => {}
-                    },
+                if let ProcessingEventType::Iterator { event_type, .. } = &event.event_type { match event_type {
+                    IteratorEventType::Initial if !found_expired => {
+                        found_initial = true;
+                    }
+                    IteratorEventType::Expired if found_initial => {
+                        found_expired = true;
+                    }
+                    IteratorEventType::Renewed if found_expired => {
+                        found_renewed = true;
+                    }
                     _ => {}
-                }
+                } }
             }
 
             ensure!(found_initial, "Missing initial iterator acquisition");
