@@ -113,12 +113,34 @@ impl KinesisClientTrait for Client {
         sequence_number: Option<&str>,
         timestamp: Option<&DateTime<Utc>>,
     ) -> Result<String, KinesisClientError> {
+        // First check the requirements based on iterator type
+        match iterator_type {
+            ShardIteratorType::AtSequenceNumber | ShardIteratorType::AfterSequenceNumber => {
+                if sequence_number.is_none() {
+                    return Err(KinesisClientError::InvalidArgument(
+                        "Sequence number required for AtSequenceNumber/AfterSequenceNumber"
+                            .to_string(),
+                    ));
+                }
+            }
+            ShardIteratorType::AtTimestamp => {
+                if timestamp.is_none() {
+                    return Err(KinesisClientError::InvalidArgument(
+                        "Timestamp required for AtTimestamp".to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        // Build the request
         let mut req = self
             .get_shard_iterator()
             .stream_name(stream_name)
             .shard_id(shard_id)
             .shard_iterator_type(iterator_type);
 
+        // Add optional parameters
         if let Some(seq) = sequence_number {
             req = req.starting_sequence_number(seq);
         }
@@ -130,6 +152,7 @@ impl KinesisClientTrait for Client {
             req = req.timestamp(smithy_dt);
         }
 
+        // Send the request
         match req.send().await {
             Ok(response) => Ok(response.shard_iterator.ok_or_else(|| {
                 KinesisClientError::Other("No shard iterator returned".to_string())
