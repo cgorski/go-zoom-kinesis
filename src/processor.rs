@@ -761,17 +761,17 @@ where
     ) -> Result<String> {
         let (iterator_type, sequence_number, timestamp) = if ctx.config.prefer_stored_checkpoint && checkpoint.is_some() {
             debug!(
-                shard_id = %shard_id,
-                checkpoint = ?checkpoint,
-                "Using stored checkpoint for iterator position"
-            );
+            shard_id = %shard_id,
+            checkpoint = ?checkpoint,
+            "Using stored checkpoint for iterator position"
+        );
             (ShardIteratorType::AfterSequenceNumber, checkpoint.as_deref(), None)
         } else {
             debug!(
-                shard_id = %shard_id,
-                initial_position = ?ctx.config.initial_position,
-                "Using configured initial position"
-            );
+            shard_id = %shard_id,
+            initial_position = ?ctx.config.initial_position,
+            "Using configured initial position"
+        );
             match &ctx.config.initial_position {
                 InitialPosition::TrimHorizon => (ShardIteratorType::TrimHorizon, None, None),
                 InitialPosition::Latest => (ShardIteratorType::Latest, None, None),
@@ -781,29 +781,35 @@ where
         };
 
         tokio::select! {
-            iterator_result = ctx.client.get_shard_iterator(
-                &ctx.config.stream_name,
-                shard_id,
-                iterator_type,
-                sequence_number,
-                timestamp,
-            ) => {
-                match iterator_result {
-                    Ok(iterator) => {
-                        debug!(shard_id = %shard_id, "Successfully acquired initial iterator");
-                        Ok(iterator)
-                    }
-                    Err(e) => {
-                        error!(shard_id = %shard_id, error = %e, "Failed to get initial iterator");
-                        Err(ProcessorError::GetIteratorFailed(e.to_string()))
-                    }
+        iterator_result = ctx.client.get_shard_iterator(
+            &ctx.config.stream_name,
+            shard_id,
+            iterator_type,
+            sequence_number,
+            timestamp,
+        ) => {
+            match iterator_result {
+                Ok(iterator) => {
+                    debug!(shard_id = %shard_id, "Successfully acquired initial iterator");
+                    // Add monitoring event for iterator acquisition
+                    ctx.send_monitoring_event(ProcessingEvent::iterator(
+                        shard_id.to_string(),
+                        IteratorEventType::Renewed,
+                        None,
+                    )).await;
+                    Ok(iterator)
+                }
+                Err(e) => {
+                    error!(shard_id = %shard_id, error = %e, "Failed to get initial iterator");
+                    Err(ProcessorError::GetIteratorFailed(e.to_string()))
                 }
             }
-            _ = shutdown_rx.changed() => {
-                info!(shard_id = %shard_id, "Shutdown received while getting initial iterator");
-                Err(ProcessorError::Shutdown)
-            }
         }
+        _ = shutdown_rx.changed() => {
+            info!(shard_id = %shard_id, "Shutdown received while getting initial iterator");
+            Err(ProcessorError::Shutdown)
+        }
+    }
     }
 
     async fn handle_iterator_expiration(

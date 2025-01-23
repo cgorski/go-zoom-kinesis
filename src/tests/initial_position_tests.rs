@@ -1,3 +1,4 @@
+use tracing::debug;
 use crate::monitoring::IteratorEventType;
 use crate::monitoring::ShardEventType;
 use crate::monitoring::ProcessingEventType;
@@ -495,4 +496,186 @@ async fn test_initial_position_behavior() -> Result<()> {
 
     Ok(())
 }
+#[tokio::test]
+async fn test_initial_position_with_monitoring() -> Result<()> {
+    let config = ProcessorConfig {
+        stream_name: "test-stream".to_string(),
+        initial_position: InitialPosition::AtSequenceNumber("test-seq-100".to_string()),
+        monitoring: MonitoringConfig {
+            enabled: true,
+            channel_size: 100,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
+    let client = MockKinesisClient::new();
+    let processor = MockRecordProcessor::new();
+    let store = InMemoryCheckpointStore::new();
+
+    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+    client.mock_get_records(Ok((
+        vec![TestUtils::create_test_record("test-seq-101", b"test data")],
+        None,
+    ))).await;
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (processor_instance, mut monitoring_rx) = KinesisProcessor::new(
+        config,
+        processor.clone(),
+        client.clone(),
+        store
+    );
+
+    let handle = tokio::spawn(async move {
+        processor_instance.run(rx).await
+    });
+
+    // Collect and verify monitoring events
+    let mut events = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(
+        Duration::from_millis(100),
+        monitoring_rx.as_mut().unwrap().recv()
+    ).await {
+        debug!("Received monitoring event: {:?}", event);
+        events.push(event);
+
+        // Break if we've seen a batch completion
+        if events.iter().any(|e| matches!(
+            e.event_type,
+            ProcessingEventType::BatchComplete { .. }
+        )) {
+            break;
+        }
+    }
+
+    // Print all events for debugging
+    debug!("All collected events:");
+    for (i, event) in events.iter().enumerate() {
+        debug!("Event {}: {:?}", i, event);
+    }
+
+    // Track event sequence
+    let mut event_sequence = Vec::new();
+    for event in &events {
+        match &event.event_type {
+            ProcessingEventType::ShardEvent {
+                event_type: ShardEventType::Started,
+                ..
+            } => event_sequence.push("shard_start"),
+            ProcessingEventType::Iterator {
+                event_type: IteratorEventType::Renewed,
+                ..
+            } => event_sequence.push("iterator_acquired"),
+            ProcessingEventType::RecordSuccess { .. } => event_sequence.push("record_success"),
+            ProcessingEventType::Checkpoint { success: true, .. } => event_sequence.push("checkpoint"),
+            ProcessingEventType::BatchComplete { .. } => event_sequence.push("batch_complete"),
+            _ => {}
+        }
+    }
+
+    debug!("Event sequence: {:?}", event_sequence);
+
+    // Verify the sequence
+    let expected_sequence = vec![
+        "shard_start",
+        "iterator_acquired",
+        "record_success",
+        "checkpoint",
+        "batch_complete"
+    ];
+
+    assert_eq!(
+        event_sequence,
+        expected_sequence,
+        "Event sequence does not match expected sequence"
+    );
+
+    tx.send(true)?;
+    handle.await??;
+
+    Ok(())
+}
+#[tokio::test]
+async fn test_initial_position_edge_cases() -> Result<()> {
+    // Test empty shard
+    let config = ProcessorConfig {
+        stream_name: "test-stream".to_string(),
+        initial_position: InitialPosition::TrimHorizon,
+        ..Default::default()
+    };
+
+    let client = MockKinesisClient::new();
+    let processor = MockRecordProcessor::new();
+    let store = InMemoryCheckpointStore::new();
+
+    client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+    client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+    client.mock_get_records(Ok((vec![], None))).await;  // Empty records
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (processor_instance, _) = KinesisProcessor::new(
+        config.clone(),
+        processor.clone(),
+        client.clone(),
+        store.clone()
+    );
+
+    let handle = tokio::spawn(async move {
+        processor_instance.run(rx).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let processed_records = processor.get_processed_records().await;
+    assert!(processed_records.is_empty(), "Should not process any records from empty shard");
+
+    tx.send(true)?;
+    handle.await??;
+
+    // Test boundary conditions for AtSequenceNumber
+    let config_boundary = ProcessorConfig {
+        stream_name: "test-stream".to_string(),
+        initial_position: InitialPosition::AtSequenceNumber("49584584857737594555757585785785785785785785785785785785785785785785785785785785785785785785785785".to_string()),
+        ..Default::default()
+    };
+
+    let client2 = MockKinesisClient::new();
+    let processor2 = MockRecordProcessor::new();
+    let store2 = InMemoryCheckpointStore::new();
+
+    client2.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+    client2.mock_get_iterator(Ok("test-iterator".to_string())).await;
+    client2.mock_get_records(Ok((
+        vec![TestUtils::create_test_record("next-seq", b"test data")],
+        None,
+    ))).await;
+
+    let (tx2, rx2) = tokio::sync::watch::channel(false);
+    let (processor_instance2, _) = KinesisProcessor::new(
+        config_boundary,
+        processor2.clone(),
+        client2.clone(),
+        store2
+    );
+
+    let handle2 = tokio::spawn(async move {
+        processor_instance2.run(rx2).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let processed_records2 = processor2.get_processed_records().await;
+    assert!(!processed_records2.is_empty(), "Should process records after boundary sequence");
+    assert_eq!(
+        processed_records2[0].sequence_number(),
+        "next-seq",
+        "Should process correct sequence after boundary"
+    );
+
+    tx2.send(true)?;
+    handle2.await??;
+
+    Ok(())
+}
