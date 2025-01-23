@@ -111,15 +111,13 @@ impl MetricsAggregator {
         }
     }
 
-    async fn process_event(&self, event: ProcessingEvent) {
+    pub async fn process_event(&self, event: ProcessingEvent) {
         let mut metrics = self.metrics.write().await;
-        let shard_metrics = metrics
-            .entry(event.shard_id.clone())
-            .or_insert_with(|| ShardMetrics {
-                window_start: Instant::now(),
-                last_updated: Instant::now(),
-                ..Default::default()
-            });
+        let shard_metrics = metrics.entry(event.shard_id.clone()).or_insert_with(|| ShardMetrics {
+            window_start: Instant::now(),
+            last_updated: Instant::now(),
+            ..Default::default()
+        });
 
         match event.event_type {
             ProcessingEventType::RecordAttempt {
@@ -145,7 +143,6 @@ impl MetricsAggregator {
                     shard_metrics.retry_attempts += 1;
                 }
 
-                // Update timing metrics
                 shard_metrics.processing_time += duration;
                 let avg_count = shard_metrics.records_processed + shard_metrics.records_failed;
                 if avg_count > 0 {
@@ -156,7 +153,6 @@ impl MetricsAggregator {
                     shard_metrics.max_processing_time = duration;
                 }
             }
-
             ProcessingEventType::BatchComplete {
                 successful_count,
                 failed_count,
@@ -165,7 +161,6 @@ impl MetricsAggregator {
                 shard_metrics.records_processed += successful_count as u64;
                 shard_metrics.records_failed += failed_count as u64;
                 shard_metrics.processing_time += duration;
-
                 debug!(
                     shard_id = %event.shard_id,
                     successful = successful_count,
@@ -174,23 +169,17 @@ impl MetricsAggregator {
                     "Batch processing completed"
                 );
             }
-
             ProcessingEventType::BatchStart { timestamp: _ } => {
-                // Just update the last activity timestamp
                 shard_metrics.last_updated = Instant::now();
             }
-
             ProcessingEventType::BatchMetrics { metrics } => {
-                // Update metrics from batch processing
                 shard_metrics.records_processed += metrics.successful_count as u64;
                 shard_metrics.records_failed += metrics.failed_count as u64;
                 shard_metrics.processing_time += metrics.processing_duration;
             }
-
             ProcessingEventType::BatchError { error, duration } => {
                 shard_metrics.hard_errors += 1;
                 shard_metrics.processing_time += duration;
-
                 warn!(
                     shard_id = %event.shard_id,
                     error = %error,
@@ -198,7 +187,6 @@ impl MetricsAggregator {
                     "Batch processing failed"
                 );
             }
-
             ProcessingEventType::RecordSuccess {
                 sequence_number,
                 checkpoint_success,
@@ -207,7 +195,6 @@ impl MetricsAggregator {
                 if checkpoint_success {
                     shard_metrics.checkpoints_succeeded += 1;
                 }
-
                 trace!(
                     shard_id = %event.shard_id,
                     sequence = %sequence_number,
@@ -215,14 +202,12 @@ impl MetricsAggregator {
                     "Record processed successfully"
                 );
             }
-
             ProcessingEventType::RecordFailure {
                 sequence_number,
                 error,
             } => {
                 shard_metrics.records_failed += 1;
                 shard_metrics.hard_errors += 1;
-
                 warn!(
                     shard_id = %event.shard_id,
                     sequence = %sequence_number,
@@ -230,13 +215,11 @@ impl MetricsAggregator {
                     "Record processing failed"
                 );
             }
-
             ProcessingEventType::CheckpointFailure {
                 sequence_number,
                 error,
             } => {
                 shard_metrics.checkpoints_failed += 1;
-
                 warn!(
                     shard_id = %event.shard_id,
                     sequence = %sequence_number,
@@ -244,22 +227,34 @@ impl MetricsAggregator {
                     "Checkpoint operation failed"
                 );
             }
-
+            ProcessingEventType::Iterator { event_type, error } => match event_type {
+                IteratorEventType::Expired => {
+                    debug!(shard_id = %event.shard_id, "Iterator expired");
+                }
+                IteratorEventType::Renewed => {
+                    shard_metrics.iterator_renewals += 1;
+                    trace!(shard_id = %event.shard_id, "Iterator renewed");
+                }
+                IteratorEventType::Failed => {
+                    shard_metrics.iterator_failures += 1;
+                    warn!(shard_id = %event.shard_id, error = ?error, "Iterator operation failed");
+                }
+                IteratorEventType::Initial => {
+                    trace!(shard_id = %event.shard_id, "Initial iterator acquired");
+                }
+                IteratorEventType::Updated => {
+                    trace!(shard_id = %event.shard_id, "Iterator updated during normal processing");
+                }
+            },
             ProcessingEventType::ShardEvent {
                 event_type,
                 details,
             } => match event_type {
                 ShardEventType::Started => {
-                    debug!(
-                        shard_id = %event.shard_id,
-                        "Shard processing started"
-                    );
+                    debug!(shard_id = %event.shard_id, "Shard processing started");
                 }
                 ShardEventType::Completed => {
-                    debug!(
-                        shard_id = %event.shard_id,
-                        "Shard processing completed"
-                    );
+                    debug!(shard_id = %event.shard_id, "Shard processing completed");
                 }
                 ShardEventType::Error => {
                     shard_metrics.hard_errors += 1;
@@ -277,31 +272,6 @@ impl MetricsAggregator {
                     );
                 }
             },
-
-            ProcessingEventType::Iterator { event_type, error } => match event_type {
-                IteratorEventType::Expired => {
-                    debug!(
-                        shard_id = %event.shard_id,
-                        "Iterator expired"
-                    );
-                }
-                IteratorEventType::Renewed => {
-                    shard_metrics.iterator_renewals += 1;
-                    trace!(
-                        shard_id = %event.shard_id,
-                        "Iterator renewed"
-                    );
-                }
-                IteratorEventType::Failed => {
-                    shard_metrics.iterator_failures += 1;
-                    warn!(
-                        shard_id = %event.shard_id,
-                        error = ?error,
-                        "Iterator operation failed"
-                    );
-                }
-            },
-
             ProcessingEventType::Checkpoint {
                 sequence_number,
                 success,

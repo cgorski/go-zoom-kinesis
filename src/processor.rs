@@ -791,10 +791,9 @@ where
             match iterator_result {
                 Ok(iterator) => {
                     debug!(shard_id = %shard_id, "Successfully acquired initial iterator");
-                    // Add monitoring event for iterator acquisition
                     ctx.send_monitoring_event(ProcessingEvent::iterator(
                         shard_id.to_string(),
-                        IteratorEventType::Renewed,
+                        IteratorEventType::Initial,
                         None,
                     )).await;
                     Ok(iterator)
@@ -818,72 +817,65 @@ where
         state: &mut ShardProcessingState,
         shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<String> {
-        // Early shutdown check
         if *shutdown_rx.borrow() {
-            debug!(shard_id=%shard_id, "Shutdown requested during iterator expiration handling");
+            debug!(shard_id = %shard_id, "Shutdown requested during iterator expiration handling");
             return Err(ProcessorError::Shutdown);
         }
 
-        // Update metrics for expiration
         state.refresh_metrics.refresh_count += 1;
         state.refresh_metrics.last_refresh_time = Some(Instant::now());
 
         debug!(
-            shard_id=%shard_id,
-            refresh_count=%state.refresh_metrics.refresh_count,
-            consecutive_failures=%state.refresh_metrics.consecutive_failures,
-            "Beginning iterator refresh"
-        );
+        shard_id = %shard_id,
+        refresh_count = %state.refresh_metrics.refresh_count,
+        consecutive_failures = %state.refresh_metrics.consecutive_failures,
+        "Beginning iterator refresh"
+    );
 
-        // Try to get a new iterator with shutdown monitoring
         let iterator_result = tokio::select! {
-            result = self.attempt_iterator_renewal(shard_id, state) => result,
-            _ = shutdown_rx.changed() => {
-                debug!(shard_id=%shard_id, "Shutdown signal received during iterator renewal");
-                return Err(ProcessorError::Shutdown);
-            }
-        };
+        result = self.attempt_iterator_renewal(shard_id, state) => result,
+        _ = shutdown_rx.changed() => {
+            debug!(shard_id = %shard_id, "Shutdown signal received during iterator renewal");
+            return Err(ProcessorError::Shutdown);
+        }
+    };
 
         match iterator_result {
             Ok(new_iterator) => {
-                // Update success metrics
                 state.refresh_metrics.consecutive_failures = 0;
                 state.refresh_metrics.last_error = None;
-
-                // Record in history
-                state
-                    .iterator_history
-                    .push_back((new_iterator.clone(), Instant::now()));
+                state.iterator_history.push_back((new_iterator.clone(), Instant::now()));
                 if state.iterator_history.len() > state.max_history_size {
                     state.iterator_history.pop_front();
                 }
 
-                info!(
-                    shard_id=%shard_id,
-                    refresh_count=%state.refresh_metrics.refresh_count,
-                    "Successfully renewed iterator"
-                );
+                self.context.send_monitoring_event(ProcessingEvent::iterator(
+                    shard_id.to_string(),
+                    IteratorEventType::Renewed,
+                    None,
+                )).await;
 
+                info!(
+                shard_id = %shard_id,
+                refresh_count = %state.refresh_metrics.refresh_count,
+                "Successfully renewed iterator"
+            );
                 Ok(new_iterator)
             }
             Err(e) => {
-                // Update failure metrics
                 state.refresh_metrics.consecutive_failures += 1;
                 state.refresh_metrics.last_error = Some(e.to_string());
-
                 error!(
-                    shard_id=%shard_id,
-                    error=%e,
-                    refresh_count=%state.refresh_metrics.refresh_count,
-                    consecutive_failures=%state.refresh_metrics.consecutive_failures,
-                    "Failed to renew iterator"
-                );
-
+                shard_id = %shard_id,
+                error = %e,
+                refresh_count = %state.refresh_metrics.refresh_count,
+                consecutive_failures = %state.refresh_metrics.consecutive_failures,
+                "Failed to renew iterator"
+            );
                 Err(e)
             }
         }
     }
-
     async fn attempt_iterator_renewal(
         &self,
         shard_id: &str,
@@ -954,20 +946,18 @@ where
         let mut current_iterator = iterator.to_string();
         let mut loop_count = 0;
 
-        // Early shutdown check
         if *shutdown_rx.borrow() {
             return Err(ProcessorError::Shutdown);
         }
 
-        // Record accumulation phase
         while let Some(max_loops) = self.context.config.max_batch_retrieval_loops {
             if loop_count >= max_loops {
                 debug!(
-                    shard_id=%shard_id,
-                    loop_count=loop_count,
-                    accumulated_count=%accumulated_records.len(),
-                    "Reached maximum batch retrieval loops"
-                );
+                shard_id = %shard_id,
+                loop_count = loop_count,
+                accumulated_count = %accumulated_records.len(),
+                "Reached maximum batch retrieval loops"
+            );
                 break;
             }
 
@@ -976,184 +966,176 @@ where
                 shard_id,
                 &current_iterator,
                 &mut shutdown_rx,
-            )
-            .await;
+            ).await;
 
             match records_result {
                 Ok((records, next_iterator)) => {
-                    // Check for end of shard
                     if records.is_empty() && next_iterator.is_none() {
                         return if accumulated_records.is_empty() {
-                            debug!(shard_id=%shard_id, "Reached end of shard with no accumulated records");
+                            debug!(
+                            shard_id = %shard_id,
+                            "Reached end of shard with no accumulated records"
+                        );
                             Ok(BatchResult::EndOfShard)
                         } else {
-                            debug!(shard_id=%shard_id, "Processing final batch at end of shard");
+                            debug!(
+                            shard_id = %shard_id,
+                            "Processing final batch at end of shard"
+                        );
                             break;
                         };
                     }
 
-                    // Accumulate records and update iterator
                     accumulated_records.extend(records);
+
                     if let Some(next) = next_iterator {
+                        self.context.send_monitoring_event(ProcessingEvent::iterator(
+                            shard_id.to_string(),
+                            IteratorEventType::Updated,
+                            None,
+                        )).await;
                         current_iterator = next;
                     } else {
-                        debug!(shard_id=%shard_id, "No next iterator available, finishing batch");
+                        debug!(
+                        shard_id = %shard_id,
+                        "No next iterator available, finishing batch"
+                    );
                         break;
                     }
 
                     loop_count += 1;
                     let elapsed = batch_start.elapsed();
 
-                    // Check timing conditions
                     if elapsed < self.context.config.minimum_batch_retrieval_time {
                         trace!(
-                            shard_id=%shard_id,
-                            elapsed_ms=%elapsed.as_millis(),
-                            min_time_ms=%self.context.config.minimum_batch_retrieval_time.as_millis(),
-                            "Continuing batch accumulation due to minimum time not reached"
-                        );
+                        shard_id = %shard_id,
+                        elapsed_ms = %elapsed.as_millis(),
+                        min_time_ms = %self.context.config.minimum_batch_retrieval_time.as_millis(),
+                        "Continuing batch accumulation due to minimum time not reached"
+                    );
                         continue;
                     }
 
                     if !accumulated_records.is_empty() {
                         debug!(
-                            shard_id=%shard_id,
-                            accumulated_count=%accumulated_records.len(),
-                            elapsed_ms=%elapsed.as_millis(),
-                            "Minimum time reached with records, processing batch"
-                        );
+                        shard_id = %shard_id,
+                        accumulated_count = %accumulated_records.len(),
+                        elapsed_ms = %elapsed.as_millis(),
+                        "Minimum time reached with records, processing batch"
+                    );
                         break;
                     }
                 }
-
                 Err(ProcessorError::IteratorExpired(_)) => {
                     info!(
-                        shard_id=%shard_id,
-                        accumulated_count=%accumulated_records.len(),
-                        "Iterator expired, attempting refresh"
-                    );
+                    shard_id = %shard_id,
+                    accumulated_count = %accumulated_records.len(),
+                    "Iterator expired, attempting refresh"
+                );
+                    self.context.send_monitoring_event(ProcessingEvent::iterator(
+                        shard_id.to_string(),
+                        IteratorEventType::Expired,
+                        None,
+                    )).await;
 
-                    self.context
-                        .send_monitoring_event(ProcessingEvent::iterator(
-                            shard_id.to_string(),
-                            IteratorEventType::Expired,
-                            None,
-                        ))
-                        .await;
+                    let new_iterator = self.handle_iterator_expiration(
+                        shard_id,
+                        state,
+                        &mut shutdown_rx
+                    ).await?;
 
-                    let new_iterator = self
-                        .handle_iterator_expiration(shard_id, state, &mut shutdown_rx)
-                        .await?;
-
-                    self.context
-                        .send_monitoring_event(ProcessingEvent::iterator(
-                            shard_id.to_string(),
-                            IteratorEventType::Renewed,
-                            None,
-                        ))
-                        .await;
-
-                    // If we have accumulated records, process them before continuing with new iterator
                     if !accumulated_records.is_empty() {
                         debug!(
-                            shard_id=%shard_id,
-                            accumulated_count=%accumulated_records.len(),
-                            "Processing accumulated records before using new iterator"
-                        );
+                        shard_id = %shard_id,
+                        accumulated_count = %accumulated_records.len(),
+                        "Processing accumulated records before using new iterator"
+                    );
                         break;
                     }
 
                     return Ok(BatchResult::Continue(new_iterator));
                 }
-
                 Err(e) => {
                     error!(
-                        shard_id=%shard_id,
-                        error=%e,
-                        accumulated_count=%accumulated_records.len(),
-                        "Error during batch accumulation"
-                    );
-
-                    self.context
-                        .send_monitoring_event(ProcessingEvent::shard_event(
-                            shard_id.to_string(),
-                            ShardEventType::Error,
-                            Some(e.to_string()),
-                        ))
-                        .await;
-
+                    shard_id = %shard_id,
+                    error = %e,
+                    accumulated_count = %accumulated_records.len(),
+                    "Error during batch accumulation"
+                );
+                    self.context.send_monitoring_event(ProcessingEvent::shard_event(
+                        shard_id.to_string(),
+                        ShardEventType::Error,
+                        Some(e.to_string()),
+                    )).await;
                     return Err(e);
                 }
             }
         }
 
-        // Process accumulated records if any
         if !accumulated_records.is_empty() {
             debug!(
-                shard_id=%shard_id,
-                accumulated_count=%accumulated_records.len(),
-                elapsed_ms=%batch_start.elapsed().as_millis(),
-                "Processing accumulated records"
-            );
+            shard_id = %shard_id,
+            accumulated_count = %accumulated_records.len(),
+            elapsed_ms = %batch_start.elapsed().as_millis(),
+            "Processing accumulated records"
+        );
 
             let batch_processor = BatchProcessor {
                 ctx: self.context.clone(),
             };
 
-            match batch_processor
-                .process_batch(shard_id, &accumulated_records, &mut shutdown_rx)
-                .await
-            {
+            match batch_processor.process_batch(shard_id, &accumulated_records, &mut shutdown_rx).await {
                 Ok(batch_result) => {
                     if let Some(seq) = batch_result.last_successful_sequence {
                         state.update_sequence(seq.clone());
                         trace!(
-                            shard_id=%shard_id,
-                            sequence=%seq,
-                            "Updated last successful sequence"
-                        );
+                        shard_id = %shard_id,
+                        sequence = %seq,
+                        "Updated last successful sequence"
+                    );
                     }
 
-                    self.context
-                        .send_monitoring_event(ProcessingEvent::batch_complete(
-                            shard_id.to_string(),
-                            batch_result.successful_records.len(),
-                            batch_result.failed_records.len(),
-                            batch_start.elapsed(),
-                        ))
-                        .await;
+                    self.context.send_monitoring_event(ProcessingEvent::batch_complete(
+                        shard_id.to_string(),
+                        batch_result.successful_records.len(),
+                        batch_result.failed_records.len(),
+                        batch_start.elapsed(),
+                    )).await;
 
                     if batch_result.successful_records.is_empty() {
-                        debug!(shard_id=%shard_id, "Batch processed with no successful records");
+                        debug!(
+                        shard_id = %shard_id,
+                        "Batch processed with no successful records"
+                    );
                         Ok(BatchResult::NoRecords)
                     } else {
                         debug!(
-                            shard_id=%shard_id,
-                            successful_count=%batch_result.successful_records.len(),
-                            "Batch processed successfully"
-                        );
+                        shard_id = %shard_id,
+                        successful_count = %batch_result.successful_records.len(),
+                        "Batch processed successfully"
+                    );
                         Ok(BatchResult::Continue(current_iterator))
                     }
                 }
                 Err(e) => {
                     error!(
-                        shard_id=%shard_id,
-                        error=%e,
-                        "Error processing batch"
-                    );
-
-                    self.context
-                        .send_monitoring_event(ProcessingEvent::batch_error(
-                            shard_id.to_string(),
-                            e.to_string(),
-                            batch_start.elapsed(),
-                        ))
-                        .await;
+                    shard_id = %shard_id,
+                    error = %e,
+                    "Error processing batch"
+                );
+                    self.context.send_monitoring_event(ProcessingEvent::batch_error(
+                        shard_id.to_string(),
+                        e.to_string(),
+                        batch_start.elapsed(),
+                    )).await;
                     Err(e)
                 }
             }
         } else {
-            debug!(shard_id=%shard_id, "No records accumulated for processing");
+            debug!(
+            shard_id = %shard_id,
+            "No records accumulated for processing"
+        );
             Ok(BatchResult::NoRecords)
         }
     }

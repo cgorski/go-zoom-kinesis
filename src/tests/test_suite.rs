@@ -115,50 +115,27 @@ mod tests {
             rate_limit: None,
         };
 
-        // Create mocks
+        // Initialize test components
         let client = MockKinesisClient::new();
         let mock_processor = MockRecordProcessor::new();
         let store = MockCheckpointStore::new();
 
-        // Save initial test checkpoint
-        store
-            .save_checkpoint("shard-1", "test-sequence-100")
+        // Set initial checkpoint
+        store.save_checkpoint("shard-1", "test-sequence-100")
             .await
             .context("Failed to save initial checkpoint")?;
 
         // Setup mock responses
-        client
-            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
-            .await;
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator-1".to_string())).await;
+        client.mock_get_records(Err(KinesisClientError::ExpiredIterator)).await;
+        client.mock_get_iterator(Ok("test-iterator-2".to_string())).await;
 
-        // First iterator request
-        client
-            .mock_get_iterator(Ok("test-iterator-1".to_string()))
-            .await;
-
-        // First get_records fails with expired iterator
-        client
-            .mock_get_records(Err(KinesisClientError::ExpiredIterator))
-            .await;
-
-        // Second iterator request (after expiry)
-        client
-            .mock_get_iterator(Ok("test-iterator-2".to_string()))
-            .await;
-
-        // Create test record with known sequence number
         let test_record = TestUtils::create_test_record("test-sequence-101", b"test data");
+        client.mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string())))).await;
+        client.mock_get_records(Ok((vec![], Some("final-iterator".to_string())))).await;
 
-        // Second get_records succeeds
-        client
-            .mock_get_records(Ok((vec![test_record], Some("next-iterator".to_string()))))
-            .await;
-
-        // Add one more successful response for potential retries
-        client
-            .mock_get_records(Ok((vec![], Some("final-iterator".to_string()))))
-            .await;
-
+        // Initialize processor
         let (_tx, rx) = tokio::sync::watch::channel(false);
         let (processor, monitoring_rx) = KinesisProcessor::new(
             config,
@@ -167,110 +144,103 @@ mod tests {
             store.clone(),
         );
 
-        let mut harness =
-            TestMonitoringHarness::new(monitoring_rx.expect("Monitoring should be enabled"));
+        let mut harness = TestMonitoringHarness::new(
+            monitoring_rx.expect("Monitoring should be enabled")
+        );
+
         let processor_clone = mock_processor.clone();
         let store_clone = store.clone();
-
-        // Track start time for timing verification
         let start_time = Instant::now();
 
         tokio::select! {
-            processor_result = processor.run(rx) => {
-                match processor_result {
-                    Ok(_) => {
-                        debug!("Processor completed successfully");
-                    }
-                    Err(e) => {
-                        if !matches!(e, ProcessorError::Shutdown) {
-                            return Err(anyhow::anyhow!("Unexpected processor error: {}", e));
-                        }
+        processor_result = processor.run(rx) => {
+            match processor_result {
+                Ok(_) => {
+                    debug!("Processor completed successfully");
+                }
+                Err(e) => {
+                    if !matches!(e, ProcessorError::Shutdown) {
+                        return Err(anyhow::anyhow!("Unexpected processor error: {}", e));
                     }
                 }
-            }
-
-            harness_result = harness.wait_for_events(&[
-                "iterator_expired",
-                "iterator_renewed",
-                "record_success_test-sequence-101",
-                "checkpoint_success_test-sequence-101",
-                "shard_completed"
-            ]) => {
-                harness_result.context("Failed while waiting for events")?;
-
-                // Verify timing expectations
-                let elapsed = start_time.elapsed();
-                ensure!(
-                    elapsed < Duration::from_secs(5),
-                    "Processing took too long: {:?}",
-                    elapsed
-                );
-
-                // Verify processing results
-                let process_count = processor_clone.get_process_count().await;
-                ensure!(
-                    process_count == 1,
-                    "Expected exactly one record to be processed, got {}",
-                    process_count
-                );
-
-                // Verify the correct record was processed
-                let processed_records = processor_clone.get_processed_records().await;
-                ensure!(
-                    processed_records.len() == 1,
-                    "Expected one processed record, got {}",
-                    processed_records.len()
-                );
-                ensure!(
-                    processed_records[0].sequence_number() == "test-sequence-101",
-                    "Wrong record processed: expected test-sequence-101, got {}",
-                    processed_records[0].sequence_number()
-                );
-
-                // Verify checkpoint was saved
-                let checkpoint = store_clone
-                    .get_checkpoint("shard-1")
-                    .await
-                    .context("Failed to get final checkpoint")?;
-                ensure!(
-                    checkpoint == Some("test-sequence-101".to_string()),
-                    "Wrong checkpoint saved: expected test-sequence-101, got {:?}",
-                    checkpoint
-                );
-
-                // Verify event ordering
-                let history = harness.get_event_history().await;
-                #[allow(unused_assignments)]
-                let mut saw_expired_before_renewed = false;
-                let mut last_expired_idx = 0;
-                let mut first_renewed_idx = usize::MAX;
-
-                for (idx, event) in history.iter().enumerate() {
-                    match &event.event_type {
-                        ProcessingEventType::Iterator { event_type: IteratorEventType::Expired, .. } => {
-                            last_expired_idx = idx;
-                        }
-                        ProcessingEventType::Iterator { event_type: IteratorEventType::Renewed, .. } => {
-                            if first_renewed_idx == usize::MAX {
-                                first_renewed_idx = idx;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                saw_expired_before_renewed = last_expired_idx < first_renewed_idx;
-                ensure!(
-                    saw_expired_before_renewed,
-                    "Iterator renewal occurred before expiration"
-                );
-            }
-
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                harness.dump_history().await;
-                return Err(anyhow::anyhow!("Test timed out waiting for processing to complete"));
             }
         }
+        harness_result = harness.wait_for_events(&[
+            "shard_start",
+            "iterator_acquired",
+            "iterator_expired",
+            "iterator_renewed",
+            "record_success_test-sequence-101",
+            "checkpoint_success_test-sequence-101",
+            "shard_completed"
+        ]) => {
+            harness_result.context("Failed while waiting for events")?;
+
+            let elapsed = start_time.elapsed();
+            ensure!(elapsed < Duration::from_secs(5),
+                   "Processing took too long: {:?}", elapsed);
+
+            // Verify processing completed correctly
+            let process_count = processor_clone.get_process_count().await;
+            ensure!(process_count == 1,
+                   "Expected exactly one record to be processed, got {}", process_count);
+
+            // Verify the correct record was processed
+            let processed_records = processor_clone.get_processed_records().await;
+            ensure!(processed_records.len() == 1,
+                   "Expected one processed record, got {}", processed_records.len());
+            ensure!(processed_records[0].sequence_number() == "test-sequence-101",
+                   "Wrong record processed: expected test-sequence-101, got {}",
+                   processed_records[0].sequence_number());
+
+            // Verify checkpoint was saved
+            let checkpoint = store_clone.get_checkpoint("shard-1")
+                .await
+                .context("Failed to get final checkpoint")?;
+            ensure!(checkpoint == Some("test-sequence-101".to_string()),
+                   "Wrong checkpoint saved: expected test-sequence-101, got {:?}",
+                   checkpoint);
+
+            // Verify event sequence
+            let history = harness.get_event_history().await;
+            debug!("Event history:");
+            for (i, event) in history.iter().enumerate() {
+                debug!("  {}: {:?}", i, event);
+            }
+
+            let mut found_initial = false;
+            let mut found_expired = false;
+            let mut found_renewed = false;
+
+            for event in &history {
+                match &event.event_type {
+                    ProcessingEventType::Iterator { event_type, .. } => match event_type {
+                        IteratorEventType::Initial if !found_expired => {
+                            found_initial = true;
+                        }
+                        IteratorEventType::Expired if found_initial => {
+                            found_expired = true;
+                        }
+                        IteratorEventType::Renewed if found_expired => {
+                            found_renewed = true;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+
+            ensure!(found_initial, "Missing initial iterator acquisition");
+            ensure!(found_expired, "Missing iterator expiration");
+            ensure!(found_renewed, "Missing iterator renewal");
+            ensure!(found_initial && found_expired && found_renewed,
+                   "Iterator events in wrong order");
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            harness.dump_history().await;
+            return Err(anyhow::anyhow!("Test timed out waiting for processing to complete"));
+        }
+    }
 
         info!("Shard iterator expiry test completed successfully");
         Ok(())

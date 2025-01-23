@@ -115,12 +115,11 @@ pub enum ShardEventType {
 /// Types of iterator events
 #[derive(Debug, Clone)]
 pub enum IteratorEventType {
-    /// Iterator expired
-    Expired,
-    /// New iterator requested
-    Renewed,
-    /// Failed to get iterator
-    Failed,
+    Initial,     // First iterator acquisition
+    Expired,     // Iterator has expired
+    Renewed,     // Renewed after expiration
+    Updated,     // Regular iterator update during normal processing
+    Failed,      // Iterator operation failed
 }
 
 impl ProcessingEvent {
@@ -333,6 +332,9 @@ impl TestMonitoringHarness {
 
         match &event.event_type {
             ProcessingEventType::Iterator { event_type, error } => match event_type {
+                IteratorEventType::Initial => {
+                    events.insert("iterator_acquired".to_string());  // Changed from "iterator_initial"
+                }
                 IteratorEventType::Expired => {
                     events.insert("iterator_expired".to_string());
                     if let Some(err) = error {
@@ -347,6 +349,9 @@ impl TestMonitoringHarness {
                     if let Some(err) = error {
                         events.insert(format!("iterator_failure_{}", err));
                     }
+                }
+                IteratorEventType::Updated => {
+                    events.insert("iterator_updated".to_string());
                 }
             },
             ProcessingEventType::RecordAttempt {
@@ -406,7 +411,7 @@ impl TestMonitoringHarness {
                 details,
             } => match event_type {
                 ShardEventType::Started => {
-                    events.insert("shard_started".to_string());
+                    events.insert("shard_start".to_string());
                 }
                 ShardEventType::Completed => {
                     events.insert("shard_completed".to_string());

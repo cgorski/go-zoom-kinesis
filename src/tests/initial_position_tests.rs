@@ -387,7 +387,7 @@ async fn test_initial_position_error_handling() -> Result<()> {
     client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
     client.mock_get_iterator(Err(KinesisClientError::AccessDenied)).await;
 
-    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (_tx, rx) = tokio::sync::watch::channel(false);
     let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client.clone(), store);
 
     let result = processor_instance.run(rx).await;
@@ -560,17 +560,21 @@ async fn test_initial_position_with_monitoring() -> Result<()> {
     let mut event_sequence = Vec::new();
     for event in &events {
         match &event.event_type {
-            ProcessingEventType::ShardEvent {
-                event_type: ShardEventType::Started,
-                ..
-            } => event_sequence.push("shard_start"),
-            ProcessingEventType::Iterator {
-                event_type: IteratorEventType::Renewed,
-                ..
-            } => event_sequence.push("iterator_acquired"),
-            ProcessingEventType::RecordSuccess { .. } => event_sequence.push("record_success"),
-            ProcessingEventType::Checkpoint { success: true, .. } => event_sequence.push("checkpoint"),
-            ProcessingEventType::BatchComplete { .. } => event_sequence.push("batch_complete"),
+            ProcessingEventType::ShardEvent { event_type: ShardEventType::Started, .. } => {
+                event_sequence.push("shard_start".to_string());
+            }
+            ProcessingEventType::Iterator { event_type: IteratorEventType::Initial, .. } => {
+                event_sequence.push("iterator_acquired".to_string());
+            }
+            ProcessingEventType::RecordSuccess { .. } => {
+                event_sequence.push("record_success".to_string());
+            }
+            ProcessingEventType::Checkpoint { success: true, .. } => {
+                event_sequence.push("checkpoint".to_string());
+            }
+            ProcessingEventType::BatchComplete { .. } => {
+                event_sequence.push("batch_complete".to_string());
+            }
             _ => {}
         }
     }
