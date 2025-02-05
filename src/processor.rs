@@ -9,6 +9,7 @@
 //! - Monitoring and metrics
 //! - Graceful shutdown
 
+use tokio::sync::watch;
 use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
@@ -622,44 +623,52 @@ where
     ///
     /// Returns Ok(()) on successful shutdown, or Error on processing failures
     pub async fn run(&self, mut shutdown_rx: Receiver<bool>) -> Result<()> {
-        // Create a new shutdown channel that we control
-        let (internal_tx, internal_rx) = channel(false);
-
         match self.context.config.total_timeout {
             Some(timeout_duration) => {
-                debug!(timeout_ms=?timeout_duration.as_millis(), "Starting processor with timeout");
+                let (done_tx, mut done_rx) = mpsc::channel(1);
+                let done_tx = Arc::new(done_tx);
 
-                let result = tokio::select! {
-                    run_result = self.run_main(internal_rx.clone()) => {
-                        run_result
-                    }
-                    _ = tokio::time::sleep(timeout_duration) => {
-                        warn!(timeout_ms=?timeout_duration.as_millis(), "Total processing timeout reached");
-                        Err(ProcessorError::TotalProcessingTimeout(timeout_duration))
-                    }
-                    _ = shutdown_rx.changed() => {
-                        info!("External shutdown signal received");
-                        Err(ProcessorError::Shutdown)
-                    }
-                };
+                tokio::select! {
+                result = async {
+                    let result = self.run_main(shutdown_rx.clone()).await;
+                    if result.is_ok() {
+                        // Send completion event before signaling done
+                        self.context.send_monitoring_event(
+                            ProcessingEvent::shard_event(
+                                "GLOBAL".to_string(),
+                                ShardEventType::Completed,
+                                None
+                            )
+                        ).await;
 
-                // Signal all shards to stop
-                if let Err(_) = internal_tx.send(true) {
-                    warn!("Failed to send internal shutdown signal");
+                        // Signal completion
+                        let _ = done_tx.send(()).await;
+                    }
+                    result
+                } => {
+                    result
                 }
 
-                // Give shards a brief moment to clean up
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                result
+                _ = tokio::time::sleep(timeout_duration) => {
+                    if done_rx.try_recv().is_ok() {
+                        // We completed just before timeout, return success
+                        Ok(())
+                    } else {
+                        self.context.send_monitoring_event(
+                            ProcessingEvent::shard_event(
+                                "GLOBAL".to_string(),
+                                ShardEventType::Interrupted,
+                                Some("Timeout".to_string())
+                            )
+                        ).await;
+                        Err(ProcessorError::TotalProcessingTimeout(timeout_duration))
+                    }
+                }
             }
-            None => {
-                // No timeout, just forward the external shutdown signal
-                self.run_main(shutdown_rx).await
             }
+            None => self.run_main(shutdown_rx).await
         }
     }
-
     /// Process all shards in the stream
     async fn process_stream(&self, shutdown_rx: &mut Receiver<bool>) -> Result<()> {
         let shards = self.context.client.list_shards(&self.context.config.stream_name).await?;
@@ -2511,4 +2520,238 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_total_timeout() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            total_timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        processor.set_pre_process_delay(Some(Duration::from_secs(1))).await;
+
+        let store = InMemoryCheckpointStore::new();
+
+        client.mock_list_shards(Ok(vec![
+            TestUtils::create_test_shard("shard-1")
+        ])).await;
+
+        let (tx, rx) = channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store
+        );
+
+        let result = processor_instance.run(rx).await;
+
+        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+
+        // Verify processor didn't complete
+        assert!(processor.get_process_count().await < 1);
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use crate::test::mocks::MockCheckpointStore;
+use crate::monitoring::ProcessingEventType;
+use crate::test::collect_monitoring_events;
+use tokio::sync::watch;
+use crate::test::mocks::MockRecordProcessor;
+use crate::test::mocks::MockKinesisClient;
+use super::*;
+    use std::time::Instant;
+    use crate::InMemoryCheckpointStore;
+    use crate::test::TestUtils;
+
+
+    /// Tests that multiple shards all receive shutdown signal on timeout
+    #[tokio::test]
+    async fn test_multiple_shards_timeout() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            total_timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        processor.set_pre_process_delay(Some(Duration::from_secs(1))).await;
+        let store = InMemoryCheckpointStore::new();
+
+        // Set up multiple shards
+        client.mock_list_shards(Ok(vec![
+            TestUtils::create_test_shard("shard-1"),
+            TestUtils::create_test_shard("shard-2"),
+            TestUtils::create_test_shard("shard-3"),
+        ])).await;
+
+        for _ in 0..3 {
+            client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+            client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
+        }
+
+        let (tx, rx) = watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+
+        let result = processor_instance.run(rx).await;
+        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+
+        // Check that no shard completed processing
+        assert_eq!(processor.get_process_count().await, 0);
+
+        Ok(())
+    }
+
+
+
+    /// Tests that external shutdown signal is still respected with timeout
+    #[tokio::test]
+    async fn test_shutdown_with_timeout() -> std::result::Result<(), ProcessorError> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            total_timeout: Some(Duration::from_secs(30)),
+            batch_size: 10,
+            processing_timeout: Duration::from_secs(1),
+            monitoring: MonitoringConfig {
+                enabled: true,
+                channel_size: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = InMemoryCheckpointStore::new();
+
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator-1".to_string())).await;
+
+        // Simulate continuous data availability
+        for i in 0..5 {
+            client.mock_get_records(Ok((
+                TestUtils::create_test_records(5),
+                Some(format!("test-iterator-{}", i + 2))
+            ))).await;
+        }
+
+        // Add processing delay to ensure we're mid-batch when shutdown occurs
+        processor.set_pre_process_delay(Some(Duration::from_millis(50))).await;
+
+        let (tx, rx) = watch::channel(false);
+
+        let (processor_instance, monitoring_rx) = KinesisProcessor::new(
+            config,
+            processor.clone(),
+            client,
+            store
+        );
+
+        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
+
+        // Wait for processing to begin
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Send shutdown signal
+        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown: {}", e)))?;
+
+        // Wait for processor to handle shutdown
+        let result = handle.await.map_err(|e| ProcessorError::Other(anyhow::anyhow!("Join error: {}", e)))?;
+
+        match result {
+            Err(ProcessorError::Shutdown) => {
+                // Verify partial processing occurred
+                let processed_count = processor.get_process_count().await;
+                if processed_count == 0 || processed_count >= 25 {
+                    return Err(ProcessorError::Other(anyhow::anyhow!(
+                    "Expected partial processing before shutdown (between 1 and 24 records), got {}",
+                    processed_count
+                )));
+                }
+
+                // Convert monitoring_rx to Option for collect_monitoring_events
+                let mut monitoring_rx_option = monitoring_rx;
+                let events = collect_monitoring_events(&mut monitoring_rx_option, Duration::from_millis(100)).await;
+
+                // Look for shutdown event
+                let has_shutdown = events.iter().any(|e| matches!(
+                e.event_type,
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Interrupted,
+                    details: Some(ref d)
+                } if d.contains("Shutdown")
+            ));
+
+                if !has_shutdown {
+                    return Err(ProcessorError::Other(anyhow::anyhow!(
+                    "Missing shutdown event in monitoring stream"
+                )));
+                }
+
+                // Verify event sequence
+                let has_start = events.iter().any(|e| matches!(
+                e.event_type,
+                ProcessingEventType::ShardEvent {
+                    event_type: ShardEventType::Started,
+                    ..
+                }
+            ));
+
+                let has_processing = events.iter().any(|e| matches!(
+                e.event_type,
+                ProcessingEventType::RecordAttempt { .. }
+            ));
+
+                if !has_start || !has_processing {
+                    return Err(ProcessorError::Other(anyhow::anyhow!(
+                    "Missing required events before shutdown: start={}, processing={}",
+                    has_start, has_processing
+                )));
+                }
+
+                Ok(())
+            },
+            other => Err(ProcessorError::Other(anyhow::anyhow!(
+            "Expected Shutdown error, got {:?}", other
+        )))
+        }
+    }
+    /// Tests timeout behavior with checkpoint operations
+    #[tokio::test]
+    async fn test_timeout_during_checkpoint() -> Result<()> {
+        let config = ProcessorConfig {
+            stream_name: "test-stream".to_string(),
+            total_timeout: Some(Duration::from_millis(150)),
+            ..Default::default()
+        };
+
+        let client = MockKinesisClient::new();
+        let processor = MockRecordProcessor::new();
+        let store = MockCheckpointStore::new();
+
+        // Make checkpoint store slow
+        store.mock_save_checkpoint(Ok(())).await;
+
+        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
+        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
+        client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
+
+        let (tx, rx) = watch::channel(false);
+        let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+
+        let result = processor_instance.run(rx).await;
+        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+
+        Ok(())
+    }
+
+    
 }
