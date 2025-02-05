@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
+use tokio::sync::watch::{channel, Receiver};
 
 /// Trait for implementing record processing logic
 ///
@@ -342,7 +343,10 @@ pub struct ProcessorConfig {
     pub api_timeout: Duration,
     /// Maximum time allowed for processing a single record
     pub processing_timeout: Duration,
-    /// Optional total runtime limit
+    /// Global timeout for the entire processing operation.
+    /// If Some(duration), all processing (across all shards) must complete within this time
+    /// or ProcessorError::TotalProcessingTimeout will be returned and all shards will be
+    /// instructed to shut down.
     pub total_timeout: Option<Duration>,
     /// Maximum number of retry attempts (None for infinite)
     pub max_retries: Option<u32>,
@@ -525,6 +529,27 @@ where
     C: KinesisClientTrait + Send + Sync + Clone + 'static,
     S: CheckpointStore + Send + Sync + Clone + 'static,
 {
+    async fn run_main(&self, mut shutdown_rx: Receiver<bool>) -> Result<()> {
+        info!(stream=%self.context.config.stream_name, "Starting Kinesis processor");
+
+        loop {
+            if *shutdown_rx.borrow() {
+                info!("Shutdown signal received");
+                break;
+            }
+
+            if let Err(e) = self.process_stream(&mut shutdown_rx).await {
+                error!(error=%e, "Error processing stream");
+                if !matches!(e, ProcessorError::Shutdown) {
+                    return Err(e);
+                }
+                break;
+            }
+        }
+
+        info!("Processor shutdown complete");
+        Ok(())
+    }
     async fn get_sequence_iterator(&self, shard_id: &str, sequence: &str) -> Result<String> {
         self.context
             .client
@@ -596,26 +621,43 @@ where
     /// # Returns
     ///
     /// Returns Ok(()) on successful shutdown, or Error on processing failures
-    pub async fn run(&self, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-        info!(stream=%self.context.config.stream_name, "Starting Kinesis processor");
+    pub async fn run(&self, mut shutdown_rx: Receiver<bool>) -> Result<()> {
+        // Create a new shutdown channel that we control
+        let (internal_tx, internal_rx) = channel(false);
 
-        loop {
-            if *shutdown_rx.borrow() {
-                info!("Shutdown signal received");
-                break;
-            }
+        match self.context.config.total_timeout {
+            Some(timeout_duration) => {
+                debug!(timeout_ms=?timeout_duration.as_millis(), "Starting processor with timeout");
 
-            if let Err(e) = self.process_stream(&mut shutdown_rx).await {
-                error!(error=%e, "Error processing stream");
-                if !matches!(e, ProcessorError::Shutdown) {
-                    return Err(e);
+                let result = tokio::select! {
+                    run_result = self.run_main(internal_rx.clone()) => {
+                        run_result
+                    }
+                    _ = tokio::time::sleep(timeout_duration) => {
+                        warn!(timeout_ms=?timeout_duration.as_millis(), "Total processing timeout reached");
+                        Err(ProcessorError::TotalProcessingTimeout(timeout_duration))
+                    }
+                    _ = shutdown_rx.changed() => {
+                        info!("External shutdown signal received");
+                        Err(ProcessorError::Shutdown)
+                    }
+                };
+
+                // Signal all shards to stop
+                if let Err(_) = internal_tx.send(true) {
+                    warn!("Failed to send internal shutdown signal");
                 }
-                break;
+
+                // Give shards a brief moment to clean up
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                result
+            }
+            None => {
+                // No timeout, just forward the external shutdown signal
+                self.run_main(shutdown_rx).await
             }
         }
-
-        info!("Processor shutdown complete");
-        Ok(())
     }
 
     /// Process all shards in the stream
