@@ -2,8 +2,7 @@ use super::types::{IteratorEventType, ProcessingEvent, ProcessingEventType, Shar
 use std::collections::HashMap;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::trace;
@@ -11,8 +10,7 @@ use tracing::{debug, info, warn};
 
 #[derive(Debug, Default)]
 pub struct ProcessingMetrics {
-    pub timeout_count: AtomicU64,
-    pub last_timeout: Arc<RwLock<Option<SystemTime>>>,
+
 }
 
 #[derive(Debug, Clone)]

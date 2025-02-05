@@ -986,19 +986,7 @@ where
         })
     }
 
-    async fn send_timeout_event(&self, duration: Duration) {
-        if let Some(tx) = &self.context.monitoring_tx {
-            let event = ProcessingEvent::shard_event(
-                "GLOBAL".to_string(),
-                ShardEventType::Interrupted,
-                Some(format!("Total timeout after {:?}", duration))
-            );
 
-            if let Err(e) = tx.send(event).await {
-                warn!(error=%e, "Failed to send timeout monitoring event");
-            }
-        }
-    }
 
     /// Process a batch of records
     async fn process_batch(
@@ -2538,7 +2526,7 @@ mod tests {
             TestUtils::create_test_shard("shard-1")
         ])).await;
 
-        let (tx, rx) = channel(false);
+        let (_tx, rx) = channel(false);
         let (processor_instance, _) = KinesisProcessor::new(
             config,
             processor.clone(),
@@ -2560,13 +2548,11 @@ mod tests {
 #[cfg(test)]
 mod timeout_tests {
     use crate::test::mocks::MockCheckpointStore;
-use crate::monitoring::ProcessingEventType;
-use crate::test::collect_monitoring_events;
 use tokio::sync::watch;
 use crate::test::mocks::MockRecordProcessor;
 use crate::test::mocks::MockKinesisClient;
 use super::*;
-    use std::time::Instant;
+    
     use crate::InMemoryCheckpointStore;
     use crate::test::TestUtils;
 
@@ -2597,7 +2583,7 @@ use super::*;
             client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
         }
 
-        let (tx, rx) = watch::channel(false);
+        let (_tx, rx) = watch::channel(false);
         let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
 
         let result = processor_instance.run(rx).await;
@@ -2632,7 +2618,7 @@ use super::*;
         client.mock_get_iterator(Ok("test-iterator".to_string())).await;
         client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
 
-        let (tx, rx) = watch::channel(false);
+        let (_tx, rx) = watch::channel(false);
         let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
 
         let result = processor_instance.run(rx).await;
