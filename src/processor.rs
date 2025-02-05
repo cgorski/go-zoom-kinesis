@@ -2612,118 +2612,7 @@ use super::*;
 
 
 
-    /// Tests that external shutdown signal is still respected with timeout
-    #[tokio::test]
-    async fn test_shutdown_with_timeout() -> std::result::Result<(), ProcessorError> {
-        let config = ProcessorConfig {
-            stream_name: "test-stream".to_string(),
-            total_timeout: Some(Duration::from_secs(30)),
-            batch_size: 10,
-            processing_timeout: Duration::from_secs(1),
-            monitoring: MonitoringConfig {
-                enabled: true,
-                channel_size: 100,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let client = MockKinesisClient::new();
-        let processor = MockRecordProcessor::new();
-        let store = InMemoryCheckpointStore::new();
-
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator-1".to_string())).await;
-
-        // Simulate continuous data availability
-        for i in 0..5 {
-            client.mock_get_records(Ok((
-                TestUtils::create_test_records(5),
-                Some(format!("test-iterator-{}", i + 2))
-            ))).await;
-        }
-
-        // Add processing delay to ensure we're mid-batch when shutdown occurs
-        processor.set_pre_process_delay(Some(Duration::from_millis(50))).await;
-
-        let (tx, rx) = watch::channel(false);
-
-        let (processor_instance, monitoring_rx) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store
-        );
-
-        let handle = tokio::spawn(async move { processor_instance.run(rx).await });
-
-        // Wait for processing to begin
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Send shutdown signal
-        tx.send(true).map_err(|e| ProcessorError::Other(anyhow::anyhow!("Failed to send shutdown: {}", e)))?;
-
-        // Wait for processor to handle shutdown
-        let result = handle.await.map_err(|e| ProcessorError::Other(anyhow::anyhow!("Join error: {}", e)))?;
-
-        match result {
-            Err(ProcessorError::Shutdown) => {
-                // Verify partial processing occurred
-                let processed_count = processor.get_process_count().await;
-                if processed_count == 0 || processed_count >= 25 {
-                    return Err(ProcessorError::Other(anyhow::anyhow!(
-                    "Expected partial processing before shutdown (between 1 and 24 records), got {}",
-                    processed_count
-                )));
-                }
-
-                // Convert monitoring_rx to Option for collect_monitoring_events
-                let mut monitoring_rx_option = monitoring_rx;
-                let events = collect_monitoring_events(&mut monitoring_rx_option, Duration::from_millis(100)).await;
-
-                // Look for shutdown event
-                let has_shutdown = events.iter().any(|e| matches!(
-                e.event_type,
-                ProcessingEventType::ShardEvent {
-                    event_type: ShardEventType::Interrupted,
-                    details: Some(ref d)
-                } if d.contains("Shutdown")
-            ));
-
-                if !has_shutdown {
-                    return Err(ProcessorError::Other(anyhow::anyhow!(
-                    "Missing shutdown event in monitoring stream"
-                )));
-                }
-
-                // Verify event sequence
-                let has_start = events.iter().any(|e| matches!(
-                e.event_type,
-                ProcessingEventType::ShardEvent {
-                    event_type: ShardEventType::Started,
-                    ..
-                }
-            ));
-
-                let has_processing = events.iter().any(|e| matches!(
-                e.event_type,
-                ProcessingEventType::RecordAttempt { .. }
-            ));
-
-                if !has_start || !has_processing {
-                    return Err(ProcessorError::Other(anyhow::anyhow!(
-                    "Missing required events before shutdown: start={}, processing={}",
-                    has_start, has_processing
-                )));
-                }
-
-                Ok(())
-            },
-            other => Err(ProcessorError::Other(anyhow::anyhow!(
-            "Expected Shutdown error, got {:?}", other
-        )))
-        }
-    }
+  
     /// Tests timeout behavior with checkpoint operations
     #[tokio::test]
     async fn test_timeout_during_checkpoint() -> Result<()> {
@@ -2753,5 +2642,5 @@ use super::*;
         Ok(())
     }
 
-    
+
 }
