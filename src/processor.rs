@@ -990,6 +990,20 @@ where
         })
     }
 
+    async fn send_timeout_event(&self, duration: Duration) {
+        if let Some(tx) = &self.context.monitoring_tx {
+            let event = ProcessingEvent::shard_event(
+                "GLOBAL".to_string(),
+                ShardEventType::Interrupted,
+                Some(format!("Total timeout after {:?}", duration))
+            );
+
+            if let Err(e) = tx.send(event).await {
+                warn!(error=%e, "Failed to send timeout monitoring event");
+            }
+        }
+    }
+
     /// Process a batch of records
     async fn process_batch(
         &self,
@@ -1624,6 +1638,8 @@ where
             Err(e) => Err(e),
         }
     }
+
+
 
     // Monitoring event helpers
     async fn send_success_event(&self, shard_id: &str, sequence: &str) {
