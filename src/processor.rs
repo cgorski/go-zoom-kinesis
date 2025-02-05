@@ -661,27 +661,17 @@ where
     }
 
     /// Process all shards in the stream
-    async fn process_stream(
-        &self,
-        shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<()> {
-        let shards = self
-            .context
-            .client
-            .list_shards(&self.context.config.stream_name)
-            .await?;
+    async fn process_stream(&self, shutdown_rx: &mut Receiver<bool>) -> Result<()> {
+        let shards = self.context.client.list_shards(&self.context.config.stream_name).await?;
 
-        let semaphore = self
-            .context
-            .config
-            .max_concurrent_shards
+        let semaphore = self.context.config.max_concurrent_shards
             .map(|limit| Arc::new(Semaphore::new(limit as usize)));
 
         let mut handles = Vec::new();
 
         for shard in shards {
             let shard_id = shard.shard_id().to_string();
-            let context = self.context.clone(); // Clone the context instead of self
+            let context = self.context.clone();
             let semaphore = semaphore.clone();
             let shutdown_rx = shutdown_rx.clone();
 
@@ -692,9 +682,7 @@ where
                     None
                 };
 
-                // Create a new processor for this shard using the cloned context
                 let processor = KinesisProcessor { context };
-
                 processor.process_shard(&shard_id, shutdown_rx).await
             });
 
