@@ -27,10 +27,10 @@ use aws_sdk_kinesis::types::{Record, ShardIteratorType};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::watch::Receiver;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
-use tokio::sync::watch::Receiver;
 
 /// Trait for implementing record processing logic
 ///
@@ -628,51 +628,58 @@ where
                 let done_tx = Arc::new(done_tx);
 
                 tokio::select! {
-                result = async {
-                    let result = self.run_main(shutdown_rx.clone()).await;
-                    if result.is_ok() {
-                        // Send completion event before signaling done
-                        self.context.send_monitoring_event(
-                            ProcessingEvent::shard_event(
-                                "GLOBAL".to_string(),
-                                ShardEventType::Completed,
-                                None
-                            )
-                        ).await;
+                    result = async {
+                        let result = self.run_main(shutdown_rx.clone()).await;
+                        if result.is_ok() {
+                            // Send completion event before signaling done
+                            self.context.send_monitoring_event(
+                                ProcessingEvent::shard_event(
+                                    "GLOBAL".to_string(),
+                                    ShardEventType::Completed,
+                                    None
+                                )
+                            ).await;
 
-                        // Signal completion
-                        let _ = done_tx.send(()).await;
+                            // Signal completion
+                            let _ = done_tx.send(()).await;
+                        }
+                        result
+                    } => {
+                        result
                     }
-                    result
-                } => {
-                    result
-                }
 
-                _ = tokio::time::sleep(timeout_duration) => {
-                    if done_rx.try_recv().is_ok() {
-                        // We completed just before timeout, return success
-                        Ok(())
-                    } else {
-                        self.context.send_monitoring_event(
-                            ProcessingEvent::shard_event(
-                                "GLOBAL".to_string(),
-                                ShardEventType::Interrupted,
-                                Some("Timeout".to_string())
-                            )
-                        ).await;
-                        Err(ProcessorError::TotalProcessingTimeout(timeout_duration))
+                    _ = tokio::time::sleep(timeout_duration) => {
+                        if done_rx.try_recv().is_ok() {
+                            // We completed just before timeout, return success
+                            Ok(())
+                        } else {
+                            self.context.send_monitoring_event(
+                                ProcessingEvent::shard_event(
+                                    "GLOBAL".to_string(),
+                                    ShardEventType::Interrupted,
+                                    Some("Timeout".to_string())
+                                )
+                            ).await;
+                            Err(ProcessorError::TotalProcessingTimeout(timeout_duration))
+                        }
                     }
                 }
             }
-            }
-            None => self.run_main(shutdown_rx).await
+            None => self.run_main(shutdown_rx).await,
         }
     }
     /// Process all shards in the stream
     async fn process_stream(&self, shutdown_rx: &mut Receiver<bool>) -> Result<()> {
-        let shards = self.context.client.list_shards(&self.context.config.stream_name).await?;
+        let shards = self
+            .context
+            .client
+            .list_shards(&self.context.config.stream_name)
+            .await?;
 
-        let semaphore = self.context.config.max_concurrent_shards
+        let semaphore = self
+            .context
+            .config
+            .max_concurrent_shards
             .map(|limit| Arc::new(Semaphore::new(limit as usize)));
 
         let mut handles = Vec::new();
@@ -985,8 +992,6 @@ where
             e
         })
     }
-
-
 
     /// Process a batch of records
     async fn process_batch(
@@ -1623,8 +1628,6 @@ where
         }
     }
 
-
-
     // Monitoring event helpers
     async fn send_success_event(&self, shard_id: &str, sequence: &str) {
         self.ctx
@@ -1724,9 +1727,9 @@ mod tests {
     };
     use std::collections::HashSet;
 
+    use crate::InMemoryCheckpointStore;
     use std::sync::Once;
     use tokio::sync::watch::channel;
-    use crate::InMemoryCheckpointStore;
     use tracing_subscriber::EnvFilter;
 
     // Add this static for one-time initialization
@@ -2518,25 +2521,26 @@ mod tests {
 
         let client = MockKinesisClient::new();
         let processor = MockRecordProcessor::new();
-        processor.set_pre_process_delay(Some(Duration::from_secs(1))).await;
+        processor
+            .set_pre_process_delay(Some(Duration::from_secs(1)))
+            .await;
 
         let store = InMemoryCheckpointStore::new();
 
-        client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1")
-        ])).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
 
         let (_tx, rx) = channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(
-            config,
-            processor.clone(),
-            client,
-            store
-        );
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         let result = processor_instance.run(rx).await;
 
-        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+        assert!(matches!(
+            result,
+            Err(ProcessorError::TotalProcessingTimeout(_))
+        ));
 
         // Verify processor didn't complete
         assert!(processor.get_process_count().await < 1);
@@ -2547,15 +2551,14 @@ mod tests {
 
 #[cfg(test)]
 mod timeout_tests {
+    use super::*;
     use crate::test::mocks::MockCheckpointStore;
-use tokio::sync::watch;
-use crate::test::mocks::MockRecordProcessor;
-use crate::test::mocks::MockKinesisClient;
-use super::*;
-    
-    use crate::InMemoryCheckpointStore;
-    use crate::test::TestUtils;
+    use crate::test::mocks::MockKinesisClient;
+    use crate::test::mocks::MockRecordProcessor;
+    use tokio::sync::watch;
 
+    use crate::test::TestUtils;
+    use crate::InMemoryCheckpointStore;
 
     /// Tests that multiple shards all receive shutdown signal on timeout
     #[tokio::test]
@@ -2568,26 +2571,38 @@ use super::*;
 
         let client = MockKinesisClient::new();
         let processor = MockRecordProcessor::new();
-        processor.set_pre_process_delay(Some(Duration::from_secs(1))).await;
+        processor
+            .set_pre_process_delay(Some(Duration::from_secs(1)))
+            .await;
         let store = InMemoryCheckpointStore::new();
 
         // Set up multiple shards
-        client.mock_list_shards(Ok(vec![
-            TestUtils::create_test_shard("shard-1"),
-            TestUtils::create_test_shard("shard-2"),
-            TestUtils::create_test_shard("shard-3"),
-        ])).await;
+        client
+            .mock_list_shards(Ok(vec![
+                TestUtils::create_test_shard("shard-1"),
+                TestUtils::create_test_shard("shard-2"),
+                TestUtils::create_test_shard("shard-3"),
+            ]))
+            .await;
 
         for _ in 0..3 {
-            client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-            client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
+            client
+                .mock_get_iterator(Ok("test-iterator".to_string()))
+                .await;
+            client
+                .mock_get_records(Ok((TestUtils::create_test_records(1), None)))
+                .await;
         }
 
         let (_tx, rx) = watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         let result = processor_instance.run(rx).await;
-        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+        assert!(matches!(
+            result,
+            Err(ProcessorError::TotalProcessingTimeout(_))
+        ));
 
         // Check that no shard completed processing
         assert_eq!(processor.get_process_count().await, 0);
@@ -2595,9 +2610,6 @@ use super::*;
         Ok(())
     }
 
-
-
-  
     /// Tests timeout behavior with checkpoint operations
     #[tokio::test]
     async fn test_timeout_during_checkpoint() -> Result<()> {
@@ -2614,18 +2626,26 @@ use super::*;
         // Make checkpoint store slow
         store.mock_save_checkpoint(Ok(())).await;
 
-        client.mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")])).await;
-        client.mock_get_iterator(Ok("test-iterator".to_string())).await;
-        client.mock_get_records(Ok((TestUtils::create_test_records(1), None))).await;
+        client
+            .mock_list_shards(Ok(vec![TestUtils::create_test_shard("shard-1")]))
+            .await;
+        client
+            .mock_get_iterator(Ok("test-iterator".to_string()))
+            .await;
+        client
+            .mock_get_records(Ok((TestUtils::create_test_records(1), None)))
+            .await;
 
         let (_tx, rx) = watch::channel(false);
-        let (processor_instance, _) = KinesisProcessor::new(config, processor.clone(), client, store);
+        let (processor_instance, _) =
+            KinesisProcessor::new(config, processor.clone(), client, store);
 
         let result = processor_instance.run(rx).await;
-        assert!(matches!(result, Err(ProcessorError::TotalProcessingTimeout(_))));
+        assert!(matches!(
+            result,
+            Err(ProcessorError::TotalProcessingTimeout(_))
+        ));
 
         Ok(())
     }
-
-
 }

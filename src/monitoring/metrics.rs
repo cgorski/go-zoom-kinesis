@@ -9,9 +9,7 @@ use tracing::trace;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Default)]
-pub struct ProcessingMetrics {
-
-}
+pub struct ProcessingMetrics {}
 
 #[derive(Debug, Clone)]
 pub struct BatchMetrics {
