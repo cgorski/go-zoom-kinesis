@@ -9,7 +9,6 @@
 //! - Monitoring and metrics
 //! - Graceful shutdown
 
-use tokio::sync::watch;
 use aws_smithy_types_convert::date_time::DateTimeExt;
 use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
@@ -31,7 +30,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use tracing::{error, info, trace, warn};
-use tokio::sync::watch::{channel, Receiver};
+use tokio::sync::watch::Receiver;
 
 /// Trait for implementing record processing logic
 ///
@@ -622,7 +621,7 @@ where
     /// # Returns
     ///
     /// Returns Ok(()) on successful shutdown, or Error on processing failures
-    pub async fn run(&self, mut shutdown_rx: Receiver<bool>) -> Result<()> {
+    pub async fn run(&self, shutdown_rx: Receiver<bool>) -> Result<()> {
         match self.context.config.total_timeout {
             Some(timeout_duration) => {
                 let (done_tx, mut done_rx) = mpsc::channel(1);
@@ -1738,7 +1737,7 @@ mod tests {
     use std::collections::HashSet;
 
     use std::sync::Once;
-
+    use tokio::sync::watch::channel;
     use crate::InMemoryCheckpointStore;
     use tracing_subscriber::EnvFilter;
 
